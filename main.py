@@ -114,11 +114,6 @@ async def processar_documento(url: str):
         if caminho_temp and os.path.exists(caminho_temp):
             os.remove(caminho_temp)
 
-@app.post("/")
-async def processar_documento(url: str):
-    # Sua implementação existente do processamento
-    pass
-
 @app.get("/", response_model=dict)
 @app.head("/")
 async def root_check():
