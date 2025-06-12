@@ -1,21 +1,28 @@
 import os
-import fitz
+import fitz  # PyMuPDF
+import requests
+import tempfile
+from urllib.parse import urlparse
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
 import associador
 import leitorNota
-import requests
-from urllib.parse import urlparse
-import tempfile
 
 app = FastAPI()
+
+# Modelo para receber a URL no corpo da requisição POST
+class DocumentoRequest(BaseModel):
+    url: str
 
 def baixar_arquivo(url: str):
     try:
         response = requests.get(url, stream=True)
         response.raise_for_status()
         
-        # Verifica se é um PDF ou OFX pelo content-type ou extensão
+        # Verifica se é um PDF ou OFX
         content_type = response.headers.get('content-type', '').lower()
         parsed_url = urlparse(url)
         file_ext = os.path.splitext(parsed_url.path)[1].lower()
@@ -29,9 +36,16 @@ def baixar_arquivo(url: str):
             for chunk in response.iter_content(chunk_size=8192):
                 temp_file.write(chunk)
             return temp_file.name
-            
+
     except requests.RequestException as e:
         raise HTTPException(status_code=400, detail=f"Erro ao baixar o arquivo: {str(e)}")
+
+def extrair_texto_pdf(caminho_pdf):
+    texto_total = ""
+    with fitz.open(caminho_pdf) as pdf:
+        for pagina in pdf:
+            texto_total += pagina.get_text()
+    return texto_total
 
 def categorizar_arquivo(caminho_arquivo):
     _, extensao = os.path.splitext(caminho_arquivo)
@@ -57,15 +71,9 @@ def categorizar_arquivo(caminho_arquivo):
     else:
         return "formato não suportado", None
 
-def extrair_texto_pdf(caminho_pdf):
-    texto_total = ""
-    with fitz.open(caminho_pdf) as pdf:
-        for pagina in pdf:
-            texto_total += pagina.get_text()
-    return texto_total
-
 @app.post("/")
-async def processar_documento(url: str):
+async def processar_documento(dados: DocumentoRequest):
+    url = dados.url
     caminho_temp = None
     try:
         caminho_temp = baixar_arquivo(url)
@@ -105,7 +113,7 @@ async def processar_documento(url: str):
                 "categoria": categoria,
                 "mensagem": "Arquivo não será processado por nenhum módulo."
             }
-            
+
     except HTTPException:
         raise
     except Exception as e:
