@@ -114,6 +114,23 @@ async def processar_documento(url: str):
         if caminho_temp and os.path.exists(caminho_temp):
             os.remove(caminho_temp)
 
-@app.get("/")
+@app.post("/")
+async def processar_documento(url: str):
+    # Sua implementação existente do processamento
+    pass
+
+@app.get("/", response_model=dict)
+@app.head("/")
+async def root_check():
+    return {
+        "status": "online",
+        "message": "Envie uma requisição POST com a URL do documento",
+        "endpoints": {
+            "POST /": "Processa URL de documento",
+            "GET /healthcheck": "Verifica status do serviço"
+        }
+    }
+
+@app.get("/healthcheck")
 async def health_check():
-    return {"status": "online", "message": "Serviço de processamento de documentos pronto para receber requisições POST com URLs"}
+    return {"status": "healthy", "app": "running"}
