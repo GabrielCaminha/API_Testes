@@ -64,8 +64,8 @@ def extrair_texto_pdf(caminho_pdf):
             texto_total += pagina.get_text()
     return texto_total
 
-@app.post("/processar-url")
-async def processar_url(url: str):
+@app.post("/")
+async def processar_documento(url: str):
     caminho_temp = None
     try:
         caminho_temp = baixar_arquivo(url)
@@ -113,3 +113,7 @@ async def processar_url(url: str):
     finally:
         if caminho_temp and os.path.exists(caminho_temp):
             os.remove(caminho_temp)
+
+@app.get("/")
+async def health_check():
+    return {"status": "online", "message": "Serviço de processamento de documentos pronto para receber requisições POST com URLs"}
