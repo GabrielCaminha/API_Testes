@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pymupdf
+pandas
+openai
+ofxparse
+openpyxl
+requests 
