@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 import os
 import fitz
@@ -8,13 +8,19 @@ import logging
 import uuid
 from associador import Associador
 import leitorNota
-import shutil
 
 # Configuração básica de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Diretório para armazenar os documentos gerados
+DOCUMENTOS_DIR = "documentos"
+os.makedirs(DOCUMENTOS_DIR, exist_ok=True)
+
+# URL base da API (substitua pelo seu domínio real)
+BASE_URL = "https://api-testes.onrender.com"
 
 def salvar_arquivo_temporario(arquivo: UploadFile, extensao: str = None):
     try:
@@ -67,10 +73,6 @@ async def processar_documentos(
 ):
     resultados = []
     caminho_temp_plano = None
-    arquivos_processados = {
-        "extratos": [],
-        "notas_fiscais": []
-    }
 
     try:
         # Verifica se há arquivos para processar
@@ -93,20 +95,20 @@ async def processar_documentos(
                 
                 if categoria == "extrato":
                     logger.info(f"Processando extrato: {arquivo.filename}")
-                    # Gera um nome único para o arquivo de saída
-                    nome_arquivo = f"resultado_{uuid.uuid4().hex[:8]}.xlsx"
-                    caminho_saida_excel = os.path.join(tempfile.gettempdir(), nome_arquivo)
+                    documento_id = f"extrato_{uuid.uuid4().hex[:8]}"
+                    caminho_saida = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.xlsx")
                     
                     # Processa o extrato
                     with open(caminho_temp, 'rb') as f:
-                        associador.processar_extrato(f, caminho_saida_excel)
+                        associador.processar_extrato(f, caminho_saida)
                     
-                    arquivos_processados["extratos"].append(caminho_saida_excel)
+                    download_url = f"{BASE_URL}/documentos/{documento_id}"
                     resultados.append({
                         "arquivo": arquivo.filename,
                         "status": "processado",
                         "tipo": "extrato",
-                        "resultado": nome_arquivo
+                        "download_url": download_url,
+                        "documento_id": documento_id
                     })
 
                 elif categoria == "nota fiscal":
@@ -119,15 +121,18 @@ async def processar_documentos(
                         continue
 
                     logger.info(f"Processando nota fiscal: {arquivo.filename}")
-                    resultado = leitorNota.processar_nota_fiscal_com_plano(conteudo, caminho_temp_plano)
-                    arquivos_processados["notas_fiscais"].append({
-                        "arquivo": arquivo.filename,
-                        "empresa": resultado["empresa"]
-                    })
+                    documento_id = f"plano_{uuid.uuid4().hex[:8]}"
+                    caminho_saida = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.txt")
+                    
+                    resultado = leitorNota.processar_nota_fiscal_com_plano(conteudo, caminho_temp_plano, caminho_saida)
+                    
+                    download_url = f"{BASE_URL}/documentos/{documento_id}"
                     resultados.append({
                         "arquivo": arquivo.filename,
                         "status": "processado",
                         "tipo": "nota fiscal",
+                        "download_url": download_url,
+                        "documento_id": documento_id,
                         "empresa": resultado["empresa"]
                     })
 
@@ -149,28 +154,10 @@ async def processar_documentos(
                 if caminho_temp and os.path.exists(caminho_temp):
                     os.remove(caminho_temp)
 
-        # Prepara a resposta
-        if arquivos_processados["notas_fiscais"] and caminho_temp_plano:
-            return FileResponse(
-                caminho_temp_plano,
-                media_type="text/plain",
-                filename="plano_de_contas_atualizado.txt",
-                headers={"X-Resultados": str(resultados)}
-            )
-        elif arquivos_processados["extratos"]:
-            caminho_excel = arquivos_processados["extratos"][0]
-            return FileResponse(
-                caminho_excel,
-                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                filename=os.path.basename(caminho_excel),
-                headers={"X-Resultados": str(resultados)}
-            )
-        else:
-            return JSONResponse(
-                content={"resultados": resultados},
-                status_code=200,
-                headers={"X-Resultados": str(resultados)}
-            )
+        return JSONResponse(
+            content={"resultados": resultados},
+            status_code=200
+        )
 
     except HTTPException:
         raise
@@ -178,9 +165,39 @@ async def processar_documentos(
         logger.error(f"Erro inesperado: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Erro interno ao processar os documentos: {str(e)}")
     finally:
-        # Limpeza de arquivos temporários
         if caminho_temp_plano and os.path.exists(caminho_temp_plano):
             os.remove(caminho_temp_plano)
+
+@app.get("/documentos/{documento_id}")
+async def obter_documento(documento_id: str):
+    try:
+        # Procura por arquivos com o ID fornecido (independente da extensão)
+        arquivos = [f for f in os.listdir(DOCUMENTOS_DIR) if f.startswith(documento_id)]
+        
+        if not arquivos:
+            raise HTTPException(status_code=404, detail="Documento não encontrado")
+        
+        caminho_arquivo = os.path.join(DOCUMENTOS_DIR, arquivos[0])
+        
+        # Determina o tipo MIME baseado na extensão
+        if caminho_arquivo.endswith('.xlsx'):
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            filename = "resultado_financeiro.xlsx"
+        elif caminho_arquivo.endswith('.txt'):
+            media_type = "text/plain"
+            filename = "plano_contas_atualizado.txt"
+        else:
+            media_type = "application/octet-stream"
+            filename = arquivos[0]
+        
+        return FileResponse(
+            caminho_arquivo,
+            media_type=media_type,
+            filename=filename
+        )
+    except Exception as e:
+        logger.error(f"Erro ao recuperar documento: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao recuperar documento: {str(e)}")
 
 @app.get("/")
 async def root_check():
@@ -189,10 +206,12 @@ async def root_check():
         "message": "Envie uma requisição POST para /processar com arquivos (PDF/OFX) e opcionalmente um plano de contas",
         "endpoints": {
             "POST /processar": "Processa múltiplos arquivos",
+            "GET /documentos/{id}": "Recupera um documento processado",
             "GET /healthcheck": "Verifica status do serviço"
-        }
+        },
+        "api_url": BASE_URL
     }
 
 @app.get("/healthcheck")
 async def health_check():
-    return {"status": "healthy", "app": "running"}
+    return {"status": "healthy", "app": "running", "api_url": BASE_URL}
