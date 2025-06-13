@@ -8,6 +8,7 @@ import logging
 import uuid
 from associador import Associador
 import leitorNota
+import shutil
 
 # Configuração básica de logging
 logging.basicConfig(level=logging.INFO)
@@ -93,14 +94,19 @@ async def processar_documentos(
                 if categoria == "extrato":
                     logger.info(f"Processando extrato: {arquivo.filename}")
                     # Gera um nome único para o arquivo de saída
-                    caminho_saida_excel = f"resultado_{uuid.uuid4().hex[:8]}.xlsx"
-                    associador.processar_extrato(caminho_temp, caminho_saida_excel)
+                    nome_arquivo = f"resultado_{uuid.uuid4().hex[:8]}.xlsx"
+                    caminho_saida_excel = os.path.join(tempfile.gettempdir(), nome_arquivo)
+                    
+                    # Processa o extrato
+                    with open(caminho_temp, 'rb') as f:
+                        associador.processar_extrato(f, caminho_saida_excel)
+                    
                     arquivos_processados["extratos"].append(caminho_saida_excel)
                     resultados.append({
                         "arquivo": arquivo.filename,
                         "status": "processado",
                         "tipo": "extrato",
-                        "resultado": caminho_saida_excel
+                        "resultado": nome_arquivo
                     })
 
                 elif categoria == "nota fiscal":
@@ -152,10 +158,11 @@ async def processar_documentos(
                 headers={"X-Resultados": str(resultados)}
             )
         elif arquivos_processados["extratos"]:
+            caminho_excel = arquivos_processados["extratos"][0]
             return FileResponse(
-                arquivos_processados["extratos"][0],
+                caminho_excel,
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                filename=os.path.basename(arquivos_processados["extratos"][0]),
+                filename=os.path.basename(caminho_excel),
                 headers={"X-Resultados": str(resultados)}
             )
         else:
@@ -171,8 +178,9 @@ async def processar_documentos(
         logger.error(f"Erro inesperado: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Erro interno ao processar os documentos: {str(e)}")
     finally:
-        # Não remove arquivos que serão retornados (FastAPI cuida disso)
-        pass
+        # Limpeza de arquivos temporários
+        if caminho_temp_plano and os.path.exists(caminho_temp_plano):
+            os.remove(caminho_temp_plano)
 
 @app.get("/")
 async def root_check():
