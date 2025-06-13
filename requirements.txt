@@ -7,3 +7,4 @@ ofxparse
 openpyxl
 requests 
 python-dotenv
+python-multipart
