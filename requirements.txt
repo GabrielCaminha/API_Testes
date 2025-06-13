@@ -8,3 +8,4 @@ openpyxl
 requests 
 python-dotenv
 python-multipart
+uuid
