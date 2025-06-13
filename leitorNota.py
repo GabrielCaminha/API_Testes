@@ -1,16 +1,12 @@
 import os
 from difflib import get_close_matches
 
-PLANO_CONTAS_PATH = "plano_de_contas.txt"
-
 def extrair_nome_empresa(texto):
-    #Sempre que surgir um novo tipo de nota fiscal com uma escrita diferente sua regra pra leitura correta deve ser adicionada aqui
     texto = texto.lower()
     linhas = texto.splitlines()
     
     for i, linha in enumerate(linhas):
         if "recebemos de" in linha:
-            # Caso especial para "recebemos de"
             inicio = linha.find("recebemos de") + len("recebemos de")
             fim = linha.find("na nota fiscal indicada ao lado")
             
@@ -23,13 +19,11 @@ def extrair_nome_empresa(texto):
                 return candidato.upper()
                 
         elif ("razão social" in linha or "emitente" in linha) and "nome" not in linha:
-            # Processamento original para outros casos
             for j in range(i + 1, len(linhas)):
                 candidato = linhas[j].strip()
                 if candidato and not candidato.startswith(("cnpj", "ie", "endereço")):
                     return candidato.upper()
     
-    # Fallback genérico
     for linha in linhas:
         candidato = linha.strip()
         if candidato and not candidato.startswith(("cnpj", "ie", "endereço", "danfe")):
@@ -37,16 +31,29 @@ def extrair_nome_empresa(texto):
     
     return "EMPRESA DESCONHECIDA"
 
-def carregar_plano_de_contas():
-    if not os.path.exists(PLANO_CONTAS_PATH):
-        return []
-    with open(PLANO_CONTAS_PATH, "r", encoding="latin-1") as f:
-        return [tuple(linha.strip().split("|")) for linha in f if linha.strip()]
+def carregar_plano_de_contas(caminho_arquivo):
+    if not os.path.exists(caminho_arquivo):
+        raise ValueError("Arquivo de plano de contas não encontrado")
+    
+    try:
+        with open(caminho_arquivo, "r", encoding="utf-8") as f:
+            return [tuple(linha.strip().split("|")) for linha in f if linha.strip()]
+    except UnicodeDecodeError:
+        with open(caminho_arquivo, "r", encoding="latin-1") as f:
+            conteudo = f.read()
+        return [tuple(linha.strip().split("|")) for linha in conteudo.splitlines() if linha.strip()]
 
-def salvar_plano_de_contas(plano):
-    with open(PLANO_CONTAS_PATH, "w", encoding="utf-8") as f:
+def salvar_plano_de_contas(caminho_arquivo, plano):
+    with open(caminho_arquivo, "w", encoding="utf-8", errors="replace") as f:
         for linha in plano:
-            f.write("|".join(linha) + "\n")
+            linha_limpa = []
+            for item in linha:
+                if isinstance(item, str):
+                    item_limpo = "".join(c for c in item if c.isprintable() or c in "\t\n\r")
+                    linha_limpa.append(item_limpo)
+                else:
+                    linha_limpa.append(str(item))
+            f.write("|".join(linha_limpa) + "\n")
 
 def empresa_já_existente(nome_empresa, plano, similaridade=0.8):
     nomes_existentes = [linha[2] for linha in plano]
@@ -64,7 +71,7 @@ def adicionar_empresa(nome_empresa, plano):
     existe, similar = empresa_já_existente(nome_empresa, plano)
     if existe:
         print(f"Empresa '{nome_empresa}' já está no plano de contas (encontrado: '{similar}').")
-        return plano
+        return plano, similar
 
     novo_codigo = str(max([int(l[0]) for l in plano] + [0]) + 1).zfill(3)
     novo_contabil = str(max([int(l[1]) for l in plano] + [11102000]) + 1)
@@ -72,19 +79,29 @@ def adicionar_empresa(nome_empresa, plano):
     
     print(f"Adicionando nova empresa: {nova_entrada}")
     plano.append(nova_entrada)
-    return plano
+    return plano, nome_empresa
 
-def processar_nota_fiscal(texto):
+def processar_nota_fiscal_com_plano(texto_nota, caminho_plano):
     """
-    Função que processa o texto já extraído do PDF e adiciona a empresa ao plano de contas.
+    Processa a nota fiscal com o plano de contas fornecido
+    Retorna um dicionário com os resultados
     """
-    print("Processando texto da nota fiscal...")
-    nome_empresa = extrair_nome_empresa(texto)
-    print(texto)
+    nome_empresa = extrair_nome_empresa(texto_nota)
     if nome_empresa == "EMPRESA DESCONHECIDA":
-        print("\nATENÇÃO: Não foi possível identificar o nome da empresa. Não será adicionado ao plano de contas.\n")
-        return
-    print(f"\n===== EMPRESA EXTRAÍDA: {nome_empresa} =====\n")
-    plano = carregar_plano_de_contas()
-    plano = adicionar_empresa(nome_empresa, plano)
-    salvar_plano_de_contas(plano)
+        return {
+            "status": "erro",
+            "mensagem": "Não foi possível identificar o nome da empresa",
+            "empresa": None,
+            "plano_atualizado": False
+        }
+    
+    plano = carregar_plano_de_contas(caminho_plano)
+    plano, empresa = adicionar_empresa(nome_empresa, plano)
+    salvar_plano_de_contas(caminho_plano, plano)
+    
+    return {
+        "status": "sucesso",
+        "empresa": empresa,
+        "plano_atualizado": True,
+        "mensagem": "Plano de contas atualizado com sucesso"
+    }
