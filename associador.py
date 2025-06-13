@@ -1,20 +1,20 @@
 import pandas as pd
 import json
 import os
+import uuid
 from openai import OpenAI
 from difflib import get_close_matches
 from ofxparse import OfxParser
 from dotenv import load_dotenv
 import logging
 from typing import Union, BinaryIO
-import uuid  
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()  
-API_KEY = os.getenv("API_KEY")  
+load_dotenv()
+API_KEY = os.getenv("API_KEY")
 
 client = OpenAI(api_key=API_KEY)
 
@@ -27,6 +27,7 @@ class Associador:
         codigos = []
         nomes = []
         try:
+            # Tenta primeiro com UTF-8
             with open(self.caminho_plano, 'r', encoding='utf-8') as f:
                 for linha in f:
                     partes = linha.strip().split('|')
@@ -34,6 +35,19 @@ class Associador:
                         codigos.append(partes[0].strip())
                         nomes.append(partes[2].strip())
             return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
+        except UnicodeDecodeError:
+            # Fallback para latin-1 se UTF-8 falhar
+            try:
+                with open(self.caminho_plano, 'r', encoding='latin-1') as f:
+                    for linha in f:
+                        partes = linha.strip().split('|')
+                        if len(partes) >= 3:
+                            codigos.append(partes[0].strip())
+                            nomes.append(partes[2].strip())
+                return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
+            except Exception as e:
+                logger.error(f"Erro ao ler plano de contas (latin-1): {str(e)}")
+                raise
         except Exception as e:
             logger.error(f"Erro ao ler plano de contas: {str(e)}")
             raise
@@ -47,6 +61,9 @@ class Associador:
                     ofx = OfxParser.parse(f)
             else:
                 # Se já for file handler (caso do Render)
+                # Garante que o ponteiro está no início
+                if hasattr(file_input, 'seek'):
+                    file_input.seek(0)
                 ofx = OfxParser.parse(file_input)
 
             transacoes = []
@@ -148,9 +165,11 @@ class Associador:
     def processar_extrato(self, file_input: Union[str, BinaryIO], caminho_saida=None):
         """Aceita tanto caminho quanto objeto de arquivo"""
         try:
-            caminho_saida = caminho_saida or f"resultado_{uuid.uuid4().hex[:8]}.xlsx"
+            # Gera um nome único para o arquivo de saída
+            nome_arquivo = f"resultado_{uuid.uuid4().hex[:8]}.xlsx"
+            caminho_saida = caminho_saida or nome_arquivo
             
-            # Processa o OFX (agora aceita file handler ou caminho)
+            # Processa o OFX
             extrato_df = self.ler_ofx(file_input)
             plano_df = self.ler_plano_de_contas()
 
@@ -185,11 +204,11 @@ class Associador:
             resultado = resultado[['Conta Código', 'Descrição', 'Nome da Conta', 'Valor', 'Crédito/Débito', 'Data']]
             resultado.to_excel(caminho_saida, index=False)
 
-            logger.info(f"Arquivo salvo em: {caminho_saida}")
+            logger.info(f"✅ Arquivo salvo em: {caminho_saida}")
             return caminho_saida
 
         except Exception as e:
-            logger.error(f"Erro no processamento: {str(e)}")
+            logger.error(f"❌ Erro no processamento: {str(e)}")
             raise
 
 # Função de compatibilidade
