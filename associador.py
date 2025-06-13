@@ -214,4 +214,4 @@ class Associador:
 # Função de compatibilidade
 def processar_extrato(caminho_ofx, caminho_saida=None):
     associador = Associador()
-    return associador.processar_extrato(caminho_ofx, caminho_saida)
+    return processar_extrato(caminho_ofx, caminho_saida)
