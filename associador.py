@@ -162,14 +162,9 @@ class Associador:
             logger.error(f"Erro ao consultar ChatGPT: {str(e)}")
             return {}
 
-    def processar_extrato(self, file_input: Union[str, BinaryIO], caminho_saida=None):
+    def processar_extrato(self, file_input: Union[str, BinaryIO], caminho_saida):
         """Aceita tanto caminho quanto objeto de arquivo"""
         try:
-            # Gera um nome único para o arquivo de saída
-            nome_arquivo = f"resultado_{uuid.uuid4().hex[:8]}.xlsx"
-            caminho_saida = caminho_saida or nome_arquivo
-            
-            # Processa o OFX
             extrato_df = self.ler_ofx(file_input)
             plano_df = self.ler_plano_de_contas()
 
