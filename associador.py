@@ -35,18 +35,6 @@ class Associador:
                         codigos.append(partes[0].strip())
                         nomes.append(partes[2].strip())
             return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
-        except UnicodeDecodeError:
-            try:
-                with open(self.caminho_plano, 'r', encoding='latin-1') as f:
-                    for linha in f:
-                        partes = linha.strip().split('|')
-                        if len(partes) >= 3:
-                            codigos.append(partes[0].strip())
-                            nomes.append(partes[2].strip())
-                return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
-            except Exception as e:
-                logger.error(f"Erro ao ler plano de contas (latin-1): {str(e)}")
-                raise
         except Exception as e:
             logger.error(f"Erro ao ler plano de contas: {str(e)}")
             raise
@@ -137,7 +125,7 @@ class Associador:
                 model="gpt-4",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
-                max_tokens=800
+                max_tokens=1000
             )
             resposta = response.choices[0].message.content
 
@@ -150,14 +138,14 @@ class Associador:
                     if conta in nomes_validos and descricao in descricoes_sem_associacao:
                         sugestoes[descricao] = conta
                     else:
-                        logger.warning(f"Ignorado: '{descricao} -> {conta}' (conta inválida ou repetida)")
+                        logger.warning(f"Ignorado: '{descricao} -> {conta}' (conta inválida ou não encontrada)")
             return sugestoes
 
         except Exception as e:
             logger.error(f"Erro ao consultar ChatGPT: {str(e)}")
             return {}
 
-    def processar_extrato(self, file_input: Union[str, BinaryIO], caminho_saida=None):
+    def processar_extrato(self, file_input: Union[str, BinaryIO], saida_base_nome="saida"):
         try:
             extrato_df = self.ler_ofx(file_input)
             plano_df = self.ler_plano_de_contas()
@@ -168,62 +156,49 @@ class Associador:
 
             associacoes = self.carregar_associacoes_json()
 
-            # Primeira tentativa: similaridade
+            # Marcar se a associação foi feita por GPT
             extrato_df['Conta Associada'] = extrato_df['Descrição'].apply(
                 lambda desc: self.associar_conta_similaridade(desc, plano_df, associacoes)
             )
 
-            # Itens não associados
             nao_associados = extrato_df[extrato_df['Conta Associada'].isna()]['Descrição'].unique().tolist()
 
-            # Dicionário para armazenar apenas as associações do ChatGPT
-            associacoes_chatgpt = {}
-
+            novas_associacoes = {}
             if nao_associados:
                 novas_associacoes = self.consultar_chatgpt_para_associacao(nao_associados, plano_df)
-
                 for desc, conta in novas_associacoes.items():
                     conta_limpa = conta.strip()
-                    associacoes_chatgpt[desc.strip()] = conta_limpa
+                    associacoes[desc.strip()] = conta_limpa
                     extrato_df.loc[extrato_df['Descrição'] == desc, 'Conta Associada'] = conta_limpa
 
             extrato_df['Conta Associada'] = extrato_df['Conta Associada'].apply(
                 lambda x: x.strip() if isinstance(x, str) else x
             )
 
-            # Salvar apenas as associações feitas por similaridade no JSON
             self.salvar_associacoes_json(associacoes)
 
-            # Gera o dataframe final com as informações do plano
             resultado = extrato_df.merge(
                 plano_df, left_on='Conta Associada', right_on='Nome da Conta', how='left'
             )
+
             resultado = resultado[['Conta Código', 'Descrição', 'Nome da Conta', 'Valor', 'Crédito/Débito', 'Data']]
 
-            caminho_saida_principal = caminho_saida or f"resultado_{uuid.uuid4().hex}.xlsx"
-            resultado.to_excel(caminho_saida_principal, index=False)
+            # Separar as linhas associadas por similaridade/histórico e por GPT
+            resultado_gpt = resultado[resultado['Descrição'].isin(novas_associacoes.keys())]
+            resultado_normais = resultado[~resultado['Descrição'].isin(novas_associacoes.keys())]
 
-            # Se houve associações feitas pelo ChatGPT, salva em uma segunda planilha
-            if associacoes_chatgpt:
-                df_chatgpt = pd.DataFrame([
-                    {'Descrição': desc, 'Conta Associada': conta}
-                    for desc, conta in associacoes_chatgpt.items()
-                ])
-                nome_arquivo_chatgpt = caminho_saida_principal.replace('.xlsx', '_chatgpt.xlsx')
-                df_chatgpt.to_excel(nome_arquivo_chatgpt, index=False)
-                logger.info(f"📄 Planilha de associações via ChatGPT salva em: {nome_arquivo_chatgpt}")
-            else:
-                logger.info("Nenhuma associação foi feita via ChatGPT.")
+            resultado_normais.to_excel(f"{saida_base_nome}_associacoes_normais.xlsx", index=False)
+            resultado_gpt.to_excel(f"{saida_base_nome}_associacoes_chatgpt.xlsx", index=False)
 
-            logger.info(f"✅ Arquivo principal salvo em: {caminho_saida_principal}")
-            return caminho_saida_principal
+            logger.info(f"✅ Arquivos salvos em: {saida_base_nome}_associacoes_normais.xlsx e {saida_base_nome}_associacoes_chatgpt.xlsx")
+            return f"{saida_base_nome}_associacoes_normais.xlsx", f"{saida_base_nome}_associacoes_chatgpt.xlsx"
 
         except Exception as e:
             logger.error(f"❌ Erro no processamento: {str(e)}")
             raise
 
 
-# Função externa para facilitar a chamada
-def processar_extrato(caminho_ofx, caminho_saida=None):
+# 🔧 Função de compatibilidade
+def processar_extrato(caminho_ofx, saida_base_nome="saida"):
     associador = Associador()
-    return associador.processar_extrato(caminho_ofx, caminho_saida)
+    return associador.processar_extrato(caminho_ofx, saida_base_nome)
