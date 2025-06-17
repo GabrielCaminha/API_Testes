@@ -9,18 +9,17 @@ import uuid
 from associador import Associador
 import leitorNota
 
-# Configuração básica de logging
+# Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Diretório para armazenar os documentos gerados
 DOCUMENTOS_DIR = "documentos"
 os.makedirs(DOCUMENTOS_DIR, exist_ok=True)
 
-# URL base da API (substitua pelo seu domínio real)
 BASE_URL = "https://api-testes.onrender.com"
+
 
 def salvar_arquivo_temporario(arquivo: UploadFile, extensao: str = None):
     try:
@@ -33,6 +32,7 @@ def salvar_arquivo_temporario(arquivo: UploadFile, extensao: str = None):
         logger.error(f"Erro ao salvar arquivo temporário: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao processar o arquivo: {str(e)}")
 
+
 def extrair_texto_pdf(caminho_pdf: str):
     try:
         texto_total = ""
@@ -43,6 +43,7 @@ def extrair_texto_pdf(caminho_pdf: str):
     except Exception as e:
         logger.error(f"Erro ao extrair texto do PDF: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao ler o arquivo PDF: {str(e)}")
+
 
 def categorizar_arquivo(caminho_arquivo: str):
     try:
@@ -66,6 +67,7 @@ def categorizar_arquivo(caminho_arquivo: str):
         logger.error(f"Erro ao categorizar arquivo: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao categorizar o arquivo: {str(e)}")
 
+
 @app.post("/processar")
 async def processar_documentos(
     arquivos: List[UploadFile] = File(...),
@@ -75,41 +77,53 @@ async def processar_documentos(
     caminho_temp_plano = None
 
     try:
-        # Verifica se há arquivos para processar
         if not arquivos:
             raise HTTPException(status_code=400, detail="Nenhum arquivo foi enviado")
 
-        # Se houver arquivo de plano, salva temporariamente
         if arquivo_plano:
             caminho_temp_plano = salvar_arquivo_temporario(arquivo_plano, '.txt')
 
-        # Cria instância do Associador com o plano de contas (se existir)
         associador = Associador(caminho_temp_plano) if caminho_temp_plano else Associador()
 
-        # Processa cada arquivo
         for arquivo in arquivos:
             caminho_temp = None
             try:
                 caminho_temp = salvar_arquivo_temporario(arquivo)
                 categoria, conteudo = categorizar_arquivo(caminho_temp)
-                
+
                 if categoria == "extrato":
                     logger.info(f"Processando extrato: {arquivo.filename}")
                     documento_id = f"extrato_{uuid.uuid4().hex[:8]}"
                     caminho_saida = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.xlsx")
-                    
-                    # Processa o extrato
-                    with open(caminho_temp, 'rb') as f:
-                        associador.processar_extrato(f, caminho_saida)
-                    
-                    download_url = f"{BASE_URL}/documentos/{documento_id}"
-                    resultados.append({
+
+                    caminho_arquivo_principal = associador.processar_extrato(
+                        open(caminho_temp, 'rb'),
+                        caminho_saida
+                    )
+
+                    caminho_chatgpt = caminho_arquivo_principal.replace('.xlsx', '_chatgpt.xlsx')
+                    existe_chatgpt = os.path.exists(caminho_chatgpt)
+
+                    resultado = {
                         "arquivo": arquivo.filename,
                         "status": "processado",
                         "tipo": "extrato",
-                        "download_url": download_url,
-                        "documento_id": documento_id
-                    })
+                        "download_url_principal": f"{BASE_URL}/documentos/{documento_id}",
+                        "documento_id_principal": documento_id
+                    }
+
+                    if existe_chatgpt:
+                        documento_id_chatgpt = f"{documento_id}_chatgpt"
+                        os.rename(
+                            caminho_chatgpt,
+                            os.path.join(DOCUMENTOS_DIR, f"{documento_id_chatgpt}.xlsx")
+                        )
+                        resultado.update({
+                            "download_url_chatgpt": f"{BASE_URL}/documentos/{documento_id_chatgpt}",
+                            "documento_id_chatgpt": documento_id_chatgpt
+                        })
+
+                    resultados.append(resultado)
 
                 elif categoria == "nota fiscal":
                     if not caminho_temp_plano:
@@ -123,15 +137,16 @@ async def processar_documentos(
                     logger.info(f"Processando nota fiscal: {arquivo.filename}")
                     documento_id = f"plano_{uuid.uuid4().hex[:8]}"
                     caminho_saida = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.txt")
-                    
-                    resultado = leitorNota.processar_nota_fiscal_com_plano(conteudo, caminho_temp_plano, caminho_saida)
-                    
-                    download_url = f"{BASE_URL}/documentos/{documento_id}"
+
+                    resultado = leitorNota.processar_nota_fiscal_com_plano(
+                        conteudo, caminho_temp_plano, caminho_saida
+                    )
+
                     resultados.append({
                         "arquivo": arquivo.filename,
                         "status": "processado",
                         "tipo": "nota fiscal",
-                        "download_url": download_url,
+                        "download_url": f"{BASE_URL}/documentos/{documento_id}",
                         "documento_id": documento_id,
                         "empresa": resultado["empresa"]
                     })
@@ -168,18 +183,17 @@ async def processar_documentos(
         if caminho_temp_plano and os.path.exists(caminho_temp_plano):
             os.remove(caminho_temp_plano)
 
+
 @app.get("/documentos/{documento_id}")
 async def obter_documento(documento_id: str):
     try:
-        # Procura por arquivos com o ID fornecido (independente da extensão)
         arquivos = [f for f in os.listdir(DOCUMENTOS_DIR) if f.startswith(documento_id)]
-        
+
         if not arquivos:
             raise HTTPException(status_code=404, detail="Documento não encontrado")
-        
+
         caminho_arquivo = os.path.join(DOCUMENTOS_DIR, arquivos[0])
-        
-        # Determina o tipo MIME baseado na extensão
+
         if caminho_arquivo.endswith('.xlsx'):
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             filename = "resultado_financeiro.xlsx"
@@ -189,7 +203,7 @@ async def obter_documento(documento_id: str):
         else:
             media_type = "application/octet-stream"
             filename = arquivos[0]
-        
+
         return FileResponse(
             caminho_arquivo,
             media_type=media_type,
@@ -198,6 +212,7 @@ async def obter_documento(documento_id: str):
     except Exception as e:
         logger.error(f"Erro ao recuperar documento: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao recuperar documento: {str(e)}")
+
 
 @app.get("/")
 async def root_check():
@@ -211,6 +226,7 @@ async def root_check():
         },
         "api_url": BASE_URL
     }
+
 
 @app.get("/healthcheck")
 async def health_check():

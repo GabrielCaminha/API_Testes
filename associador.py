@@ -18,6 +18,7 @@ API_KEY = os.getenv("API_KEY")
 
 client = OpenAI(api_key=API_KEY)
 
+
 class Associador:
     def __init__(self, caminho_plano=None):
         self.caminho_plano = caminho_plano or "plano_de_contas.txt"
@@ -27,7 +28,6 @@ class Associador:
         codigos = []
         nomes = []
         try:
-            # Tenta primeiro com UTF-8
             with open(self.caminho_plano, 'r', encoding='utf-8') as f:
                 for linha in f:
                     partes = linha.strip().split('|')
@@ -36,7 +36,6 @@ class Associador:
                         nomes.append(partes[2].strip())
             return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
         except UnicodeDecodeError:
-            # Fallback para latin-1 se UTF-8 falhar
             try:
                 with open(self.caminho_plano, 'r', encoding='latin-1') as f:
                     for linha in f:
@@ -53,15 +52,11 @@ class Associador:
             raise
 
     def ler_ofx(self, file_input: Union[str, BinaryIO]):
-        """Aceita tanto caminho do arquivo quanto objeto de arquivo binário"""
         try:
             if isinstance(file_input, str):
-                # Se for string, abre o arquivo como binário
                 with open(file_input, 'rb') as f:
                     ofx = OfxParser.parse(f)
             else:
-                # Se já for file handler (caso do Render)
-                # Garante que o ponteiro está no início
                 if hasattr(file_input, 'seek'):
                     file_input.seek(0)
                 ofx = OfxParser.parse(file_input)
@@ -77,7 +72,7 @@ class Associador:
                         "Saldo": None
                     })
             return pd.DataFrame(transacoes)
-            
+
         except Exception as e:
             logger.error(f"Erro ao ler OFX: {str(e)}")
             raise ValueError(f"Formato OFX inválido: {str(e)}")
@@ -162,8 +157,7 @@ class Associador:
             logger.error(f"Erro ao consultar ChatGPT: {str(e)}")
             return {}
 
-    def processar_extrato(self, file_input: Union[str, BinaryIO], caminho_saida):
-        """Aceita tanto caminho quanto objeto de arquivo"""
+    def processar_extrato(self, file_input: Union[str, BinaryIO], caminho_saida=None):
         try:
             extrato_df = self.ler_ofx(file_input)
             plano_df = self.ler_plano_de_contas()
@@ -174,39 +168,62 @@ class Associador:
 
             associacoes = self.carregar_associacoes_json()
 
+            # Primeira tentativa: similaridade
             extrato_df['Conta Associada'] = extrato_df['Descrição'].apply(
                 lambda desc: self.associar_conta_similaridade(desc, plano_df, associacoes)
             )
 
+            # Itens não associados
             nao_associados = extrato_df[extrato_df['Conta Associada'].isna()]['Descrição'].unique().tolist()
+
+            # Dicionário para armazenar apenas as associações do ChatGPT
+            associacoes_chatgpt = {}
+
             if nao_associados:
                 novas_associacoes = self.consultar_chatgpt_para_associacao(nao_associados, plano_df)
+
                 for desc, conta in novas_associacoes.items():
                     conta_limpa = conta.strip()
-                    associacoes[desc.strip()] = conta_limpa
+                    associacoes_chatgpt[desc.strip()] = conta_limpa
                     extrato_df.loc[extrato_df['Descrição'] == desc, 'Conta Associada'] = conta_limpa
 
             extrato_df['Conta Associada'] = extrato_df['Conta Associada'].apply(
                 lambda x: x.strip() if isinstance(x, str) else x
             )
 
+            # Salvar apenas as associações feitas por similaridade no JSON
             self.salvar_associacoes_json(associacoes)
 
+            # Gera o dataframe final com as informações do plano
             resultado = extrato_df.merge(
                 plano_df, left_on='Conta Associada', right_on='Nome da Conta', how='left'
             )
-
             resultado = resultado[['Conta Código', 'Descrição', 'Nome da Conta', 'Valor', 'Crédito/Débito', 'Data']]
-            resultado.to_excel(caminho_saida, index=False)
 
-            logger.info(f"✅ Arquivo salvo em: {caminho_saida}")
-            return caminho_saida
+            caminho_saida_principal = caminho_saida or f"resultado_{uuid.uuid4().hex}.xlsx"
+            resultado.to_excel(caminho_saida_principal, index=False)
+
+            # Se houve associações feitas pelo ChatGPT, salva em uma segunda planilha
+            if associacoes_chatgpt:
+                df_chatgpt = pd.DataFrame([
+                    {'Descrição': desc, 'Conta Associada': conta}
+                    for desc, conta in associacoes_chatgpt.items()
+                ])
+                nome_arquivo_chatgpt = caminho_saida_principal.replace('.xlsx', '_chatgpt.xlsx')
+                df_chatgpt.to_excel(nome_arquivo_chatgpt, index=False)
+                logger.info(f"📄 Planilha de associações via ChatGPT salva em: {nome_arquivo_chatgpt}")
+            else:
+                logger.info("Nenhuma associação foi feita via ChatGPT.")
+
+            logger.info(f"✅ Arquivo principal salvo em: {caminho_saida_principal}")
+            return caminho_saida_principal
 
         except Exception as e:
             logger.error(f"❌ Erro no processamento: {str(e)}")
             raise
 
-# Função de compatibilidade
+
+# Função externa para facilitar a chamada
 def processar_extrato(caminho_ofx, caminho_saida=None):
     associador = Associador()
-    return processar_extrato(caminho_ofx, caminho_saida)
+    return associador.processar_extrato(caminho_ofx, caminho_saida)
