@@ -13,37 +13,42 @@ from typing import Union, BinaryIO
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Carregar chave da API
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
 client = OpenAI(api_key=API_KEY)
+
 
 class Associador:
     def __init__(self, caminho_plano=None):
         self.caminho_plano = caminho_plano or "plano_de_contas.txt"
         self.associacoes_path = "associacoes.json"
 
+    # Ler plano de contas
     def ler_plano_de_contas(self):
         codigos = []
         nomes = []
+        try:
+            with open(self.caminho_plano, 'r', encoding='utf-8') as f:
+                for linha in f:
+                    partes = linha.strip().split('|')
+                    if len(partes) >= 3:
+                        codigos.append(partes[0].strip())
+                        nomes.append(partes[2].strip())
+            return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
+        except UnicodeDecodeError:
+            with open(self.caminho_plano, 'r', encoding='latin-1') as f:
+                for linha in f:
+                    partes = linha.strip().split('|')
+                    if len(partes) >= 3:
+                        codigos.append(partes[0].strip())
+                        nomes.append(partes[2].strip())
+            return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
+        except Exception as e:
+            logger.error(f"Erro ao ler plano de contas: {str(e)}")
+            raise
 
-        for encoding in ['utf-8', 'latin-1']:
-            try:
-                with open(self.caminho_plano, 'r', encoding=encoding) as f:
-                    for linha in f:
-                        partes = linha.strip().split('|')
-                        if len(partes) >= 3:
-                            codigos.append(partes[0].strip())
-                            nomes.append(partes[2].strip())
-                logger.info(f"✔️ Plano de contas lido com encoding: {encoding}")
-                return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
-            except UnicodeDecodeError:
-                logger.warning(f"⚠️ Falha ao ler com {encoding}, tentando outro encoding...")
-            except Exception as e:
-                logger.error(f"Erro ao ler plano de contas com {encoding}: {str(e)}")
-                raise
-
-        raise ValueError("❌ Não foi possível ler o plano de contas com os encodings utf-8 e latin-1.")
-
+    # Ler arquivo OFX
     def ler_ofx(self, file_input: Union[str, BinaryIO]):
         try:
             if isinstance(file_input, str):
@@ -70,6 +75,7 @@ class Associador:
             logger.error(f"Erro ao ler OFX: {str(e)}")
             raise ValueError(f"Formato OFX inválido: {str(e)}")
 
+    # Carregar associações salvas
     def carregar_associacoes_json(self):
         try:
             if os.path.exists(self.associacoes_path):
@@ -81,6 +87,7 @@ class Associador:
             logger.error(f"Erro ao carregar associações: {str(e)}")
             return {}
 
+    # Salvar associações
     def salvar_associacoes_json(self, associacoes):
         try:
             with open(self.associacoes_path, 'w', encoding='utf-8') as f:
@@ -89,6 +96,7 @@ class Associador:
             logger.error(f"Erro ao salvar associações: {str(e)}")
             raise
 
+    # Associação por similaridade (difflib)
     def associar_conta_similaridade(self, descricao, plano_df, associacoes_dict, cutoff=0.20):
         try:
             descricao = descricao.strip()
@@ -106,40 +114,43 @@ class Associador:
             logger.error(f"Erro na associação por similaridade: {str(e)}")
             return None
 
+    # Associação via ChatGPT (com prompt otimizado)
     def consultar_chatgpt_para_associacao(self, descricoes_sem_associacao, plano_df):
         try:
             nomes_validos = sorted(set(plano_df['Nome da Conta'].tolist()))
 
             prompt = (
-                "Você é um assistente contábil. Sua tarefa é associar descrições de transações bancárias a nomes do plano de contas a seguir.\n"
-                "⚠️ Regras importantes:\n"
-                "- Use **exatamente um dos nomes do plano de contas** como resposta.\n"
-                "- Nunca repita a descrição como nome de conta.\n"
-                "- Responda no formato: [descrição] -> [nome da conta do plano]\n\n"
+                "Você é um assistente contábil. Sua tarefa é associar as descrições abaixo "
+                "ao nome correto do plano de contas. ⚠️ Regras importantes:\n"
+                "- Sempre escolha exatamente um dos nomes do plano de contas.\n"
+                "- Nunca repita a descrição como nome da conta.\n"
+                "- Formato da resposta: [descrição] -> [nome da conta]\n\n"
                 "Nomes disponíveis no plano de contas:\n"
             )
 
             for nome in nomes_validos:
-                prompt += f"{nome}\n"
+                prompt += f"- {nome}\n"
 
             prompt += "\nDescrições para associar:\n"
             for desc in descricoes_sem_associacao:
-                prompt += f"{desc}\n"
+                prompt += f"- {desc}\n"
 
             response = client.chat.completions.create(
-                model="gpt-4",
+                model="gpt-3.5-turbo-1106",  # ou 'gpt-4o' para mais robustez
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
-                max_tokens=1500
+                max_tokens=3000
             )
+
             resposta = response.choices[0].message.content
 
             sugestoes = {}
             for linha in resposta.splitlines():
                 if "->" in linha:
                     partes = linha.split("->", 1)
-                    descricao = partes[0].strip()
+                    descricao = partes[0].strip().lstrip("-").strip()
                     conta = partes[1].strip()
+
                     if conta in nomes_validos and descricao in descricoes_sem_associacao:
                         sugestoes[descricao] = conta
                     else:
@@ -150,7 +161,8 @@ class Associador:
             logger.error(f"Erro ao consultar ChatGPT: {str(e)}")
             return {}
 
-    def processar_extrato(self, file_input: Union[str, BinaryIO], caminho_saida_base):
+    # Processamento completo
+    def processar_extrato(self, file_input: Union[str, BinaryIO], caminho_saida):
         try:
             extrato_df = self.ler_ofx(file_input)
             plano_df = self.ler_plano_de_contas()
@@ -165,10 +177,8 @@ class Associador:
                 lambda desc: self.associar_conta_similaridade(desc, plano_df, associacoes)
             )
 
-            # Captura os não associados
             nao_associados = extrato_df[extrato_df['Conta Associada'].isna()]['Descrição'].unique().tolist()
 
-            novas_associacoes = {}
             if nao_associados:
                 novas_associacoes = self.consultar_chatgpt_para_associacao(nao_associados, plano_df)
                 for desc, conta in novas_associacoes.items():
@@ -186,33 +196,18 @@ class Associador:
                 plano_df, left_on='Conta Associada', right_on='Nome da Conta', how='left'
             )
 
-            resultado_final = resultado[['Conta Código', 'Descrição', 'Nome da Conta', 'Valor', 'Crédito/Débito', 'Data']]
+            resultado = resultado[['Conta Código', 'Descrição', 'Nome da Conta', 'Valor', 'Crédito/Débito', 'Data']]
+            resultado.to_excel(caminho_saida, index=False)
 
-            # Separar os dois tipos de associação
-            resultado_similaridade = resultado_final[
-                resultado_final['Descrição'].isin([k for k in associacoes.keys() if k not in novas_associacoes])
-            ]
-
-            resultado_chatgpt = resultado_final[
-                resultado_final['Descrição'].isin(novas_associacoes.keys())
-            ]
-
-            caminho_similaridade = caminho_saida_base.replace('.xlsx', '_similaridade.xlsx')
-            caminho_chatgpt = caminho_saida_base.replace('.xlsx', '_chatgpt.xlsx')
-
-            resultado_similaridade.to_excel(caminho_similaridade, index=False)
-            resultado_chatgpt.to_excel(caminho_chatgpt, index=False)
-
-            logger.info(f"✅ Arquivo Similaridade salvo em: {caminho_similaridade}")
-            logger.info(f"✅ Arquivo ChatGPT salvo em: {caminho_chatgpt}")
-
-            return caminho_similaridade, caminho_chatgpt
+            logger.info(f"✅ Arquivo salvo em: {caminho_saida}")
+            return caminho_saida
 
         except Exception as e:
             logger.error(f"❌ Erro no processamento: {str(e)}")
             raise
 
-# Função externa de compatibilidade
-def processar_extrato(caminho_ofx, caminho_saida_base):
+
+# Função de compatibilidade
+def processar_extrato(caminho_ofx, caminho_saida=None):
     associador = Associador()
-    return associador.processar_extrato(caminho_ofx, caminho_saida_base)
+    return associador.processar_extrato(caminho_ofx, caminho_saida)
