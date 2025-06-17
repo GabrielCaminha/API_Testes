@@ -15,9 +15,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
-
 client = OpenAI(api_key=API_KEY)
-
 
 class Associador:
     def __init__(self, caminho_plano=None):
@@ -27,17 +25,24 @@ class Associador:
     def ler_plano_de_contas(self):
         codigos = []
         nomes = []
-        try:
-            with open(self.caminho_plano, 'r', encoding='utf-8') as f:
-                for linha in f:
-                    partes = linha.strip().split('|')
-                    if len(partes) >= 3:
-                        codigos.append(partes[0].strip())
-                        nomes.append(partes[2].strip())
-            return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
-        except Exception as e:
-            logger.error(f"Erro ao ler plano de contas: {str(e)}")
-            raise
+
+        for encoding in ['utf-8', 'latin-1']:
+            try:
+                with open(self.caminho_plano, 'r', encoding=encoding) as f:
+                    for linha in f:
+                        partes = linha.strip().split('|')
+                        if len(partes) >= 3:
+                            codigos.append(partes[0].strip())
+                            nomes.append(partes[2].strip())
+                logger.info(f"✔️ Plano de contas lido com encoding: {encoding}")
+                return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
+            except UnicodeDecodeError:
+                logger.warning(f"⚠️ Falha ao ler com {encoding}, tentando outro encoding...")
+            except Exception as e:
+                logger.error(f"Erro ao ler plano de contas com {encoding}: {str(e)}")
+                raise
+
+        raise ValueError("❌ Não foi possível ler o plano de contas com os encodings utf-8 e latin-1.")
 
     def ler_ofx(self, file_input: Union[str, BinaryIO]):
         try:
@@ -125,7 +130,7 @@ class Associador:
                 model="gpt-4",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
-                max_tokens=1000
+                max_tokens=1500
             )
             resposta = response.choices[0].message.content
 
@@ -138,14 +143,14 @@ class Associador:
                     if conta in nomes_validos and descricao in descricoes_sem_associacao:
                         sugestoes[descricao] = conta
                     else:
-                        logger.warning(f"Ignorado: '{descricao} -> {conta}' (conta inválida ou não encontrada)")
+                        logger.warning(f"Ignorado: '{descricao} -> {conta}' (conta inválida ou não reconhecida)")
             return sugestoes
 
         except Exception as e:
             logger.error(f"Erro ao consultar ChatGPT: {str(e)}")
             return {}
 
-    def processar_extrato(self, file_input: Union[str, BinaryIO], saida_base_nome="saida"):
+    def processar_extrato(self, file_input: Union[str, BinaryIO], caminho_saida_base):
         try:
             extrato_df = self.ler_ofx(file_input)
             plano_df = self.ler_plano_de_contas()
@@ -156,11 +161,11 @@ class Associador:
 
             associacoes = self.carregar_associacoes_json()
 
-            # Marcar se a associação foi feita por GPT
             extrato_df['Conta Associada'] = extrato_df['Descrição'].apply(
                 lambda desc: self.associar_conta_similaridade(desc, plano_df, associacoes)
             )
 
+            # Captura os não associados
             nao_associados = extrato_df[extrato_df['Conta Associada'].isna()]['Descrição'].unique().tolist()
 
             novas_associacoes = {}
@@ -181,24 +186,33 @@ class Associador:
                 plano_df, left_on='Conta Associada', right_on='Nome da Conta', how='left'
             )
 
-            resultado = resultado[['Conta Código', 'Descrição', 'Nome da Conta', 'Valor', 'Crédito/Débito', 'Data']]
+            resultado_final = resultado[['Conta Código', 'Descrição', 'Nome da Conta', 'Valor', 'Crédito/Débito', 'Data']]
 
-            # Separar as linhas associadas por similaridade/histórico e por GPT
-            resultado_gpt = resultado[resultado['Descrição'].isin(novas_associacoes.keys())]
-            resultado_normais = resultado[~resultado['Descrição'].isin(novas_associacoes.keys())]
+            # Separar os dois tipos de associação
+            resultado_similaridade = resultado_final[
+                resultado_final['Descrição'].isin([k for k in associacoes.keys() if k not in novas_associacoes])
+            ]
 
-            resultado_normais.to_excel(f"{saida_base_nome}_associacoes_normais.xlsx", index=False)
-            resultado_gpt.to_excel(f"{saida_base_nome}_associacoes_chatgpt.xlsx", index=False)
+            resultado_chatgpt = resultado_final[
+                resultado_final['Descrição'].isin(novas_associacoes.keys())
+            ]
 
-            logger.info(f"✅ Arquivos salvos em: {saida_base_nome}_associacoes_normais.xlsx e {saida_base_nome}_associacoes_chatgpt.xlsx")
-            return f"{saida_base_nome}_associacoes_normais.xlsx", f"{saida_base_nome}_associacoes_chatgpt.xlsx"
+            caminho_similaridade = caminho_saida_base.replace('.xlsx', '_similaridade.xlsx')
+            caminho_chatgpt = caminho_saida_base.replace('.xlsx', '_chatgpt.xlsx')
+
+            resultado_similaridade.to_excel(caminho_similaridade, index=False)
+            resultado_chatgpt.to_excel(caminho_chatgpt, index=False)
+
+            logger.info(f"✅ Arquivo Similaridade salvo em: {caminho_similaridade}")
+            logger.info(f"✅ Arquivo ChatGPT salvo em: {caminho_chatgpt}")
+
+            return caminho_similaridade, caminho_chatgpt
 
         except Exception as e:
             logger.error(f"❌ Erro no processamento: {str(e)}")
             raise
 
-
-# 🔧 Função de compatibilidade
-def processar_extrato(caminho_ofx, saida_base_nome="saida"):
+# Função externa de compatibilidade
+def processar_extrato(caminho_ofx, caminho_saida_base):
     associador = Associador()
-    return associador.processar_extrato(caminho_ofx, saida_base_nome)
+    return associador.processar_extrato(caminho_ofx, caminho_saida_base)
