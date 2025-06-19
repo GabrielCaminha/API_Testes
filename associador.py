@@ -18,6 +18,7 @@ API_KEY = os.getenv("API_KEY")
 
 client = OpenAI(api_key=API_KEY)
 
+
 class Associador:
     def __init__(self, caminho_plano=None):
         self.caminho_plano = caminho_plano or "plano_de_contas.txt"
@@ -27,7 +28,6 @@ class Associador:
         codigos = []
         nomes = []
         try:
-            # Tenta primeiro com UTF-8
             with open(self.caminho_plano, 'r', encoding='utf-8') as f:
                 for linha in f:
                     partes = linha.strip().split('|')
@@ -36,32 +36,23 @@ class Associador:
                         nomes.append(partes[2].strip())
             return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
         except UnicodeDecodeError:
-            # Fallback para latin-1 se UTF-8 falhar
-            try:
-                with open(self.caminho_plano, 'r', encoding='latin-1') as f:
-                    for linha in f:
-                        partes = linha.strip().split('|')
-                        if len(partes) >= 3:
-                            codigos.append(partes[0].strip())
-                            nomes.append(partes[2].strip())
-                return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
-            except Exception as e:
-                logger.error(f"Erro ao ler plano de contas (latin-1): {str(e)}")
-                raise
+            with open(self.caminho_plano, 'r', encoding='latin-1') as f:
+                for linha in f:
+                    partes = linha.strip().split('|')
+                    if len(partes) >= 3:
+                        codigos.append(partes[0].strip())
+                        nomes.append(partes[2].strip())
+            return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
         except Exception as e:
             logger.error(f"Erro ao ler plano de contas: {str(e)}")
             raise
 
     def ler_ofx(self, file_input: Union[str, BinaryIO]):
-        """Aceita tanto caminho do arquivo quanto objeto de arquivo binário"""
         try:
             if isinstance(file_input, str):
-                # Se for string, abre o arquivo como binário
                 with open(file_input, 'rb') as f:
                     ofx = OfxParser.parse(f)
             else:
-                # Se já for file handler (caso do Render)
-                # Garante que o ponteiro está no início
                 if hasattr(file_input, 'seek'):
                     file_input.seek(0)
                 ofx = OfxParser.parse(file_input)
@@ -162,8 +153,25 @@ class Associador:
             logger.error(f"Erro ao consultar ChatGPT: {str(e)}")
             return {}
 
+    def gerar_txt_conciliado(self, df, caminho_saida_txt):
+        try:
+            with open(caminho_saida_txt, 'w', encoding='utf-8') as f:
+                f.write('|0000|32662718000130|\n')
+                for _, row in df.iterrows():
+                    f.write('|6000|X||||\n')
+                    data = row['Data']
+                    debito = row['Conta Código'] if row['Crédito/Débito'] == 'DEBIT' else row['Conta Código']
+                    credito = row['Conta Código'] if row['Crédito/Débito'] == 'CREDIT' else row['Conta Código']
+                    valor = f"{abs(row['Valor']):,.2f}".replace('.', '').replace(',', '.')
+                    descricao = row['Descrição']
+                    linha = f"|6100|{data}|{debito}|{credito}|{valor}||{descricao}|||||\n"
+                    f.write(linha)
+                logger.info(f"✅ Arquivo TXT salvo em: {caminho_saida_txt}")
+        except Exception as e:
+            logger.error(f"Erro ao gerar TXT: {str(e)}")
+            raise
+
     def processar_extrato(self, file_input: Union[str, BinaryIO], caminho_saida):
-        """Aceita tanto caminho quanto objeto de arquivo"""
         try:
             extrato_df = self.ler_ofx(file_input)
             plano_df = self.ler_plano_de_contas()
@@ -174,7 +182,6 @@ class Associador:
 
             associacoes = self.carregar_associacoes_json()
 
-            # Associações já existentes ou por similaridade
             extrato_df['Conta Associada'] = extrato_df['Descrição'].apply(
                 lambda desc: self.associar_conta_similaridade(desc, plano_df, associacoes)
             )
@@ -184,22 +191,18 @@ class Associador:
             if nao_associados:
                 novas_associacoes = self.consultar_chatgpt_para_associacao(nao_associados, plano_df)
 
-                # Atualizar as associações com as respostas do ChatGPT
                 for desc, conta in novas_associacoes.items():
                     conta_limpa = conta.strip()
                     associacoes[desc.strip()] = conta_limpa
                     extrato_df.loc[extrato_df['Descrição'] == desc, 'Conta Associada'] = conta_limpa
 
-                # Agora, filtra o DataFrame só com as linhas associadas pelo ChatGPT
                 df_chatgpt = extrato_df[extrato_df['Descrição'].isin(novas_associacoes.keys())].copy()
 
-                # Fazer merge para adicionar dados do plano
                 df_chatgpt = df_chatgpt.merge(
                     plano_df, left_on='Conta Associada', right_on='Nome da Conta', how='left'
                 )
                 df_chatgpt = df_chatgpt[['Conta Código', 'Descrição', 'Nome da Conta', 'Valor', 'Crédito/Débito', 'Data']]
 
-                # Salva planilha só com as respostas do ChatGPT
                 caminho_chatgpt = caminho_saida.replace('.xlsx', '_chatgpt.xlsx')
                 df_chatgpt.to_excel(caminho_chatgpt, index=False)
                 logger.info(f"✅ Planilha com respostas do ChatGPT salva em: {caminho_chatgpt}")
@@ -217,12 +220,17 @@ class Associador:
             resultado = resultado[['Conta Código', 'Descrição', 'Nome da Conta', 'Valor', 'Crédito/Débito', 'Data']]
             resultado.to_excel(caminho_saida, index=False)
 
-            logger.info(f"✅ Arquivo salvo em: {caminho_saida}")
-            return caminho_saida
+            logger.info(f"✅ Arquivo Excel salvo em: {caminho_saida}")
+
+            caminho_txt = caminho_saida.replace('.xlsx', '.txt')
+            self.gerar_txt_conciliado(resultado, caminho_txt)
+
+            return caminho_saida, caminho_txt
 
         except Exception as e:
             logger.error(f"❌ Erro no processamento: {str(e)}")
             raise
+
 
 # Função de compatibilidade
 def processar_extrato(caminho_ofx, caminho_saida=None):

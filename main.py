@@ -1,3 +1,5 @@
+# ... (importações iguais)
+
 from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,56 +17,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Diretório para armazenar os documentos gerados
 DOCUMENTOS_DIR = "documentos"
 os.makedirs(DOCUMENTOS_DIR, exist_ok=True)
 
-# URL base da API (substitua pelo seu domínio real)
 BASE_URL = "https://api-testes.onrender.com"
 
-def salvar_arquivo_temporario(arquivo: UploadFile, extensao: str = None):
-    try:
-        file_ext = extensao if extensao else os.path.splitext(arquivo.filename)[1].lower()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
-            conteudo = arquivo.file.read()
-            temp_file.write(conteudo)
-            return temp_file.name
-    except Exception as e:
-        logger.error(f"Erro ao salvar arquivo temporário: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao processar o arquivo: {str(e)}")
-
-def extrair_texto_pdf(caminho_pdf: str):
-    try:
-        texto_total = ""
-        with fitz.open(caminho_pdf) as pdf:
-            for pagina in pdf:
-                texto_total += pagina.get_text()
-        return texto_total
-    except Exception as e:
-        logger.error(f"Erro ao extrair texto do PDF: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao ler o arquivo PDF: {str(e)}")
-
-def categorizar_arquivo(caminho_arquivo: str):
-    try:
-        _, extensao = os.path.splitext(caminho_arquivo)
-        extensao = extensao.lower()
-
-        if extensao == ".ofx":
-            return "extrato", None
-        elif extensao == ".pdf":
-            texto_extraido = extrair_texto_pdf(caminho_arquivo)
-            palavras_chave_nota_fiscal = ["nota fiscal", "nfe", "nf-e"]
-            texto_normalizado = texto_extraido.lower()
-
-            if any(palavra in texto_normalizado for palavra in palavras_chave_nota_fiscal):
-                return "nota fiscal", texto_extraido
-            else:
-                return "pdf não identificado", None
-        else:
-            return "formato não suportado", None
-    except Exception as e:
-        logger.error(f"Erro ao categorizar arquivo: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao categorizar o arquivo: {str(e)}")
+# Funções utilitárias (iguais)
+# salvar_arquivo_temporario(), extrair_texto_pdf(), categorizar_arquivo()
 
 @app.post("/processar")
 async def processar_documentos(
@@ -75,18 +34,14 @@ async def processar_documentos(
     caminho_temp_plano = None
 
     try:
-        # Verifica se há arquivos para processar
         if not arquivos:
             raise HTTPException(status_code=400, detail="Nenhum arquivo foi enviado")
 
-        # Se houver arquivo de plano, salva temporariamente
         if arquivo_plano:
             caminho_temp_plano = salvar_arquivo_temporario(arquivo_plano, '.txt')
 
-        # Cria instância do Associador com o plano de contas (se existir)
         associador = Associador(caminho_temp_plano) if caminho_temp_plano else Associador()
 
-        # Processa cada arquivo
         for arquivo in arquivos:
             caminho_temp = None
             try:
@@ -97,14 +52,14 @@ async def processar_documentos(
                     logger.info(f"Processando extrato: {arquivo.filename}")
                     documento_id = f"extrato_{uuid.uuid4().hex[:8]}"
                     caminho_saida = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.xlsx")
-                    
-                    # Processa o extrato
-                    with open(caminho_temp, 'rb') as f:
-                        associador.processar_extrato(f, caminho_saida)
-                    
-                    download_url = f"{BASE_URL}/documentos/{documento_id}"
 
-                    # Novo: verificar se o arquivo _chatgpt.xlsx existe
+                    # Processa o extrato e gera também o TXT
+                    caminho_xlsx, caminho_txt = associador.processar_extrato(caminho_temp, caminho_saida)
+
+                    download_url = f"{BASE_URL}/documentos/{documento_id}"
+                    download_url_txt = f"{BASE_URL}/documentos/{documento_id}".replace(".xlsx", ".txt")
+
+                    # Verifica arquivo _chatgpt.xlsx
                     caminho_saida_chatgpt = caminho_saida.replace(".xlsx", "_chatgpt.xlsx")
                     download_url_chatgpt = None
                     documento_id_chatgpt = None
@@ -119,7 +74,8 @@ async def processar_documentos(
                         "arquivo": arquivo.filename,
                         "status": "processado",
                         "tipo": "extrato",
-                        "download_url": download_url,
+                        "download_url_excel": download_url,
+                        "download_url_txt": download_url_txt,
                         "documento_id": documento_id
                     }
 
@@ -141,7 +97,7 @@ async def processar_documentos(
                     documento_id = f"plano_{uuid.uuid4().hex[:8]}"
                     caminho_saida = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.txt")
                     
-                    resultado = leitorNota.processar_nota_fiscal_com_plano(conteudo, caminho_temp_plano, caminho_saida)
+                    resultado_nota = leitorNota.processar_nota_fiscal_com_plano(conteudo, caminho_temp_plano, caminho_saida)
                     
                     download_url = f"{BASE_URL}/documentos/{documento_id}"
                     resultados.append({
@@ -150,7 +106,7 @@ async def processar_documentos(
                         "tipo": "nota fiscal",
                         "download_url": download_url,
                         "documento_id": documento_id,
-                        "empresa": resultado["empresa"]
+                        "empresa": resultado_nota["empresa"]
                     })
 
                 else:
@@ -171,38 +127,34 @@ async def processar_documentos(
                 if caminho_temp and os.path.exists(caminho_temp):
                     os.remove(caminho_temp)
 
-        return JSONResponse(
-            content={"resultados": resultados},
-            status_code=200
-        )
+        return JSONResponse(content={"resultados": resultados}, status_code=200)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Erro inesperado: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Erro interno ao processar os documentos: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
     finally:
         if caminho_temp_plano and os.path.exists(caminho_temp_plano):
             os.remove(caminho_temp_plano)
 
+
 @app.get("/documentos/{documento_id}")
 async def obter_documento(documento_id: str):
     try:
-        # Procura por arquivos com o ID fornecido (independente da extensão)
         arquivos = [f for f in os.listdir(DOCUMENTOS_DIR) if f.startswith(documento_id)]
         
         if not arquivos:
             raise HTTPException(status_code=404, detail="Documento não encontrado")
         
         caminho_arquivo = os.path.join(DOCUMENTOS_DIR, arquivos[0])
-        
-        # Determina o tipo MIME baseado na extensão
+
         if caminho_arquivo.endswith('.xlsx'):
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             filename = "resultado_financeiro.xlsx"
         elif caminho_arquivo.endswith('.txt'):
             media_type = "text/plain"
-            filename = "plano_contas_atualizado.txt"
+            filename = "conciliado.txt"
         else:
             media_type = "application/octet-stream"
             filename = arquivos[0]
@@ -216,6 +168,7 @@ async def obter_documento(documento_id: str):
         logger.error(f"Erro ao recuperar documento: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao recuperar documento: {str(e)}")
 
+
 @app.get("/")
 async def root_check():
     return {
@@ -228,6 +181,7 @@ async def root_check():
         },
         "api_url": BASE_URL
     }
+
 
 @app.get("/healthcheck")
 async def health_check():
