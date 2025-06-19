@@ -97,7 +97,7 @@ class Associador:
             logger.error(f"Erro ao salvar associações: {str(e)}")
             raise
 
-    def associar_conta_similaridade(self, descricao, plano_df, associacoes_dict, cutoff=0.20):
+    def associar_conta_similaridade(self, descricao, plano_df, associacoes_dict, cutoff=0.35):
         try:
             descricao = descricao.strip()
             if descricao in associacoes_dict:
