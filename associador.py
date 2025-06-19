@@ -218,11 +218,6 @@ class Associador:
                     f.write("|0000|32662718000130|\n")  # Pode parametrizar se quiser
                     for _, row in resultado.iterrows():
                         f.write("|6000|X||||\n")
-                        # Exemplo formatado de linha 6100 com campos (Data, Conta Código, Conta Associada e Valor)
-                        # Como você pediu, preencher os campos segundo o padrão:
-                        # |6100|Data|Conta Código|???|Valor|...|Descrição|||||
-                        # Vou considerar que o campo após Conta Código é um código fixo (por ex. 8), e outro fixo (11) — ajuste se quiser
-                        # Para seu exemplo, vou deixar campos 4 e 5 vazios exceto os que você pediu.
 
                         # Campos para linha 6100:
                         data = row['Data']
