@@ -7,23 +7,21 @@ import tempfile
 import logging
 import uuid
 from associador import Associador
+import associadorPorTexto
 import leitorNota
+import interpretarExtrato  
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Inicialização da API
 app = FastAPI()
 
-# Diretório para armazenar documentos
 DOCUMENTOS_DIR = "documentos"
 os.makedirs(DOCUMENTOS_DIR, exist_ok=True)
 
-# URL base da API
 BASE_URL = "https://api-testes.onrender.com"
 
-# 🔧 Função para salvar arquivo temporário
 def salvar_arquivo_temporario(arquivo: UploadFile, extensao: str = None):
     try:
         file_ext = extensao if extensao else os.path.splitext(arquivo.filename)[1].lower()
@@ -35,7 +33,6 @@ def salvar_arquivo_temporario(arquivo: UploadFile, extensao: str = None):
         logger.error(f"Erro ao salvar arquivo temporário: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao processar o arquivo: {str(e)}")
 
-# 🔍 Função para extrair texto de PDF
 def extrair_texto_pdf(caminho_pdf: str):
     try:
         texto_total = ""
@@ -47,7 +44,6 @@ def extrair_texto_pdf(caminho_pdf: str):
         logger.error(f"Erro ao extrair texto do PDF: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao ler o arquivo PDF: {str(e)}")
 
-# 🔍 Função para categorizar o arquivo enviado
 def categorizar_arquivo(caminho_arquivo: str):
     try:
         _, extensao = os.path.splitext(caminho_arquivo)
@@ -55,26 +51,32 @@ def categorizar_arquivo(caminho_arquivo: str):
 
         if extensao == ".ofx":
             return "extrato", None
+
         elif extensao == ".pdf":
             texto_extraido = extrair_texto_pdf(caminho_arquivo)
-            palavras_chave_nota_fiscal = ["nota fiscal", "nfe", "nf-e"]
             texto_normalizado = texto_extraido.lower()
+
+            palavras_chave_nota_fiscal = ["nota fiscal", "nfe", "nf-e"]
+            palavras_chave_extrato = ["extrato", "saldo", "agência", "conta corrente", "data da operação"]
 
             if any(palavra in texto_normalizado for palavra in palavras_chave_nota_fiscal):
                 return "nota fiscal", texto_extraido
+            elif any(palavra in texto_normalizado for palavra in palavras_chave_extrato):
+                return "extrato_pdf", texto_extraido
             else:
                 return "pdf não identificado", None
         else:
             return "formato não suportado", None
+
     except Exception as e:
         logger.error(f"Erro ao categorizar arquivo: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao categorizar o arquivo: {str(e)}")
 
-# 🚀 Endpoint principal para processar documentos
 @app.post("/processar")
 async def processar_documentos(
     arquivos: List[UploadFile] = File(...),
-    arquivo_plano: Optional[UploadFile] = File(None)
+    arquivo_plano: Optional[UploadFile] = File(None),
+    usuario_id: str = "default"
 ):
     resultados = []
     caminho_temp_plano = None
@@ -86,27 +88,25 @@ async def processar_documentos(
         if arquivo_plano:
             caminho_temp_plano = salvar_arquivo_temporario(arquivo_plano, '.txt')
 
-        associador = Associador(caminho_temp_plano) if caminho_temp_plano else Associador()
+        associador = Associador(caminho_temp_plano, usuario_id) if caminho_temp_plano else Associador(None, usuario_id)
 
         for arquivo in arquivos:
             caminho_temp = None
             try:
                 caminho_temp = salvar_arquivo_temporario(arquivo)
                 categoria, conteudo = categorizar_arquivo(caminho_temp)
-                
+
                 if categoria == "extrato":
                     logger.info(f"Processando extrato: {arquivo.filename}")
                     documento_id = f"extrato_{uuid.uuid4().hex[:8]}"
                     caminho_saida_xlsx = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.xlsx")
                     caminho_saida_txt = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.txt")
 
-                    # Processa o extrato e gera também o TXT
                     associador.processar_extrato(caminho_temp, caminho_saida_xlsx, caminho_saida_txt)
 
                     download_url_xlsx = f"{BASE_URL}/documentos/{documento_id}"
                     download_url_txt = f"{BASE_URL}/documentos/{documento_id}.txt"
 
-                    # Verifica arquivo _chatgpt.xlsx
                     caminho_saida_chatgpt = caminho_saida_xlsx.replace(".xlsx", "_chatgpt.xlsx")
                     download_url_chatgpt = None
 
@@ -142,9 +142,9 @@ async def processar_documentos(
                     logger.info(f"Processando nota fiscal: {arquivo.filename}")
                     documento_id = f"plano_{uuid.uuid4().hex[:8]}"
                     caminho_saida = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.txt")
-                    
+
                     resultado_nota = leitorNota.processar_nota_fiscal_com_plano(conteudo, caminho_temp_plano, caminho_saida)
-                    
+
                     download_url = f"{BASE_URL}/documentos/{documento_id}"
                     resultados.append({
                         "arquivo": arquivo.filename,
@@ -154,6 +154,67 @@ async def processar_documentos(
                         "documento_id": documento_id,
                         "empresa": resultado_nota["empresa"]
                     })
+
+                elif categoria == "extrato_pdf":
+                    try:
+                        logger.info(f"Encaminhando PDF de extrato para o interpretarExtrato: {arquivo.filename}")
+                        resultado_extrato = interpretarExtrato.processar_texto_extrato(texto_extraido=conteudo)
+
+                        if caminho_temp_plano:
+                            logger.info(f"Enviando texto extraído para associadorPorTexto.associar com plano de contas")
+
+                            documento_id = f"extrato_pdf_{uuid.uuid4().hex[:8]}"
+                            caminho_saida_xlsx = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.xlsx")
+                            caminho_saida_txt = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.txt")
+
+                            associadorPorTexto.associar(
+                                texto=resultado_extrato,
+                                caminho_saida_xlsx=caminho_saida_xlsx,
+                                caminho_saida_txt=caminho_saida_txt,
+                                caminho_plano=caminho_temp_plano,
+                                usuario_id=usuario_id
+                            )
+
+                            download_url_xlsx = f"{BASE_URL}/documentos/{documento_id}"
+                            download_url_txt = f"{BASE_URL}/documentos/{documento_id}.txt"
+
+                            caminho_saida_chatgpt = caminho_saida_xlsx.replace(".xlsx", "_chatgpt.xlsx")
+                            download_url_chatgpt = None
+
+                            if os.path.exists(caminho_saida_chatgpt):
+                                documento_id_chatgpt = f"{documento_id}_chatgpt"
+                                novo_caminho_chatgpt = os.path.join(DOCUMENTOS_DIR, f"{documento_id_chatgpt}.xlsx")
+                                os.rename(caminho_saida_chatgpt, novo_caminho_chatgpt)
+                                download_url_chatgpt = f"{BASE_URL}/documentos/{documento_id_chatgpt}"
+
+                            resultado = {
+                                "arquivo": arquivo.filename,
+                                "status": "processado",
+                                "tipo": "extrato_pdf",
+                                "download_url_excel": download_url_xlsx,
+                                "download_url_txt": download_url_txt,
+                                "documento_id": documento_id
+                            }
+
+                            if download_url_chatgpt:
+                                resultado["download_url_chatgpt"] = download_url_chatgpt
+
+                            resultados.append(resultado)
+
+                        else:
+                            resultados.append({
+                                "arquivo": arquivo.filename,
+                                "status": "erro",
+                                "mensagem": "Arquivo de plano de contas não fornecido para o PDF de extrato"
+                            })
+
+                    except Exception as e:
+                        logger.error(f"Erro ao processar extrato PDF via interpretarExtrato ou associadorPorTexto: {str(e)}")
+                        resultados.append({
+                            "arquivo": arquivo.filename,
+                            "status": "erro",
+                            "mensagem": f"Erro ao processar extrato PDF: {str(e)}"
+                        })
 
                 else:
                     resultados.append({
@@ -184,15 +245,14 @@ async def processar_documentos(
         if caminho_temp_plano and os.path.exists(caminho_temp_plano):
             os.remove(caminho_temp_plano)
 
-# 🔗 Endpoint para download dos documentos
 @app.get("/documentos/{documento_id}")
 async def obter_documento(documento_id: str):
     try:
         arquivos = [f for f in os.listdir(DOCUMENTOS_DIR) if f.startswith(documento_id)]
-        
+
         if not arquivos:
             raise HTTPException(status_code=404, detail="Documento não encontrado")
-        
+
         caminho_arquivo = os.path.join(DOCUMENTOS_DIR, arquivos[0])
 
         if caminho_arquivo.endswith('.xlsx'):
@@ -204,7 +264,7 @@ async def obter_documento(documento_id: str):
         else:
             media_type = "application/octet-stream"
             filename = arquivos[0]
-        
+
         return FileResponse(
             caminho_arquivo,
             media_type=media_type,
@@ -214,7 +274,6 @@ async def obter_documento(documento_id: str):
         logger.error(f"Erro ao recuperar documento: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao recuperar documento: {str(e)}")
 
-# 🏠 Endpoint de boas-vindas
 @app.get("/")
 async def root_check():
     return {
@@ -228,7 +287,6 @@ async def root_check():
         "api_url": BASE_URL
     }
 
-# 🔥 Healthcheck
 @app.get("/healthcheck")
 async def health_check():
-     return {"status": "healthy", "app": "running", "api_url": BASE_URL}
+    return {"status": "healthy", "app": "running", "api_url": BASE_URL}
