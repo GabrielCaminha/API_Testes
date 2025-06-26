@@ -3,7 +3,6 @@ import logging
 from dotenv import load_dotenv
 from openai import OpenAI
 import pdfplumber
-from tkinter import Tk, filedialog
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
@@ -16,22 +15,6 @@ API_KEY = os.getenv("API_KEY2")
 # Configurar cliente OpenAI
 client = OpenAI(api_key=API_KEY)
 
-def selecionar_pdf():
-    try:
-        root = Tk()
-        root.withdraw()
-        root.update()
-        caminho_arquivo = filedialog.askopenfilename(
-            title="Selecione o PDF do extrato bancário",
-            filetypes=[("Arquivos PDF", "*.pdf")]
-        )
-        root.destroy()
-        if not caminho_arquivo:
-            logger.warning("Nenhum arquivo selecionado.")
-        return caminho_arquivo
-    except Exception as e:
-        logger.error(f"Erro ao abrir o seletor de arquivos: {e}")
-        return None
 
 def extrair_texto_pdf(caminho_pdf):
     try:
@@ -80,7 +63,7 @@ def processar_texto_extrato(texto_extraido):
 def main():
     caminho_pdf = selecionar_pdf()
     if not caminho_pdf:
-        logger.error("Nenhum PDF selecionado. Encerrando.")
+        logger.error("Nenhum PDF válido informado. Encerrando.")
         return
 
     texto_pdf = extrair_texto_pdf(caminho_pdf)
@@ -92,13 +75,13 @@ def main():
     if not dados_formatados:
         logger.error("Falha na obtenção dos dados formatados. Encerrando.")
         return
+
     print("\n=== Texto extraído do PDF ===\n")
     print(texto_pdf)
     print("\n=============================\n")
     print("\n=== Resposta do ChatGPT ===\n")
     print(dados_formatados)
     print("\n===========================\n")
-
 
 if __name__ == "__main__":
     main()
