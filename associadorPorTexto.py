@@ -109,8 +109,8 @@ class AssociadorPorTexto:
                 "⚠️ Regras importantes:\n"
                 "- Use **exatamente um dos nomes do plano de contas** como resposta.\n"
                 "- Nunca repita a descrição como nome de conta.\n"
-                "- Caso não encontre uma associação possivel, use a conta padrão de A IDENTIFICAR que esta dentro do plano de contas.\n"
-                "- A cada item que você identificar, os próximos que forem praticamente idênticos a um já encontrado devem ter a mesma associação.\n"
+                "- Caso não encontre uma associação possível, use a conta padrão de A IDENTIFICAR que está dentro do plano de contas.\n"
+                "- Os próximos itens que forem praticamente idênticos a um já identificado devem receber a mesma associação.\n"
                 "- Responda no formato: [descrição] -> [nome da conta do plano]\n\n"
                 "Nomes disponíveis no plano de contas:\n"
             )
@@ -197,9 +197,18 @@ class AssociadorPorTexto:
             df['Conta Associada'] = df['Conta Associada'].apply(lambda x: x.strip() if isinstance(x, str) else x)
             self.salvar_associacoes_json(associacoes)
 
+            # Merge e validação do ID Estendido
             resultado = df.merge(plano_df, left_on='Conta Associada', right_on='Nome da Conta', how='left')
-            resultado = resultado[['Conta Código', 'ID Estendido', 'Descrição', 'Nome da Conta', 'Valor', 'Data']]
+            if 'ID Estendido' not in resultado.columns:
+                resultado['ID Estendido'] = '999'
+            else:
+                resultado['ID Estendido'] = resultado['ID Estendido'].fillna('999').astype(str)
 
+            # Log de uso de ID estendido padrão
+            num_padrao = (resultado['ID Estendido'] == '999').sum()
+            logger.info(f"⚠️ {num_padrao} linha(s) utilizaram o ID Estendido padrão '999'.")
+
+            resultado = resultado[['Conta Código', 'ID Estendido', 'Descrição', 'Nome da Conta', 'Valor', 'Data']]
             resultado.to_excel(caminho_saida_xlsx, index=False)
             logger.info(f"✅ Arquivo Excel salvo em: {caminho_saida_xlsx}")
 
