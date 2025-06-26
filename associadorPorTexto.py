@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY2")
+
 client = OpenAI(api_key=API_KEY)
 
 class AssociadorPorTexto:
@@ -28,42 +29,21 @@ class AssociadorPorTexto:
         codigos, ids_estendidos, nomes = [], [], []
         try:
             with open(self.caminho_plano, 'r', encoding='utf-8') as f:
-                linhas = f.readlines()
+                for linha in f:
+                    partes = linha.strip().split('|')
+                    if len(partes) >= 3:
+                        codigos.append(partes[0].strip())
+                        ids_estendidos.append(partes[1].strip())
+                        nomes.append(partes[2].strip())
         except UnicodeDecodeError:
             with open(self.caminho_plano, 'r', encoding='latin-1') as f:
-                linhas = f.readlines()
-
-        for linha in linhas:
-            partes = linha.strip().split('|')
-            if len(partes) >= 3:
-                codigos.append(partes[0].strip())
-                ids_estendidos.append(partes[1].strip() or '999')
-                nomes.append(partes[2].strip())
-            elif len(partes) == 2:
-                codigos.append(partes[0].strip())
-                id_nome = partes[1].strip()
-                match = re.match(r'(\d+)\s+(.*)', id_nome)
-                if match:
-                    ids_estendidos.append(match.group(1))
-                    nomes.append(match.group(2))
-                else:
-                    ids_estendidos.append('999')
-                    nomes.append(id_nome)
-            elif len(partes) == 1:
-                codigos.append(partes[0].strip())
-                ids_estendidos.append('999')
-                nomes.append('A IDENTIFICAR')
-
-        while len(ids_estendidos) < len(codigos):
-            ids_estendidos.append('999')
-        while len(nomes) < len(codigos):
-            nomes.append('A IDENTIFICAR')
-
-        return pd.DataFrame({
-            'Conta Código': codigos,
-            'ID Estendido': ids_estendidos,
-            'Nome da Conta': nomes
-        })
+                for linha in f:
+                    partes = linha.strip().split('|')
+                    if len(partes) >= 3:
+                        codigos.append(partes[0].strip())
+                        ids_estendidos.append(partes[1].strip())
+                        nomes.append(partes[2].strip())
+        return pd.DataFrame({'Conta Código': codigos, 'ID Estendido': ids_estendidos, 'Nome da Conta': nomes})
 
     def carregar_associacoes_json(self):
         try:
@@ -109,8 +89,8 @@ class AssociadorPorTexto:
                 "⚠️ Regras importantes:\n"
                 "- Use **exatamente um dos nomes do plano de contas** como resposta.\n"
                 "- Nunca repita a descrição como nome de conta.\n"
-                "- Caso não encontre uma associação possível, use a conta padrão de A IDENTIFICAR que está dentro do plano de contas.\n"
-                "- Os próximos itens que forem praticamente idênticos a um já identificado devem receber a mesma associação.\n"
+                "- Caso não encontre uma associação possivel, use a conta padrão de A IDENTIFICAR que esta dentro do plano de contas.\n"
+                "- A cade item que você identificar, os proximos que forem praticamente identicos a um já encontrado devem ter a mesma associação.\n"
                 "- Responda no formato: [descrição] -> [nome da conta do plano]\n\n"
                 "Nomes disponíveis no plano de contas:\n"
             )
@@ -197,18 +177,9 @@ class AssociadorPorTexto:
             df['Conta Associada'] = df['Conta Associada'].apply(lambda x: x.strip() if isinstance(x, str) else x)
             self.salvar_associacoes_json(associacoes)
 
-            # Merge e validação do ID Estendido
             resultado = df.merge(plano_df, left_on='Conta Associada', right_on='Nome da Conta', how='left')
-            if 'ID Estendido' not in resultado.columns:
-                resultado['ID Estendido'] = '999'
-            else:
-                resultado['ID Estendido'] = resultado['ID Estendido'].fillna('999').astype(str)
-
-            # Log de uso de ID estendido padrão
-            num_padrao = (resultado['ID Estendido'] == '999').sum()
-            logger.info(f"⚠️ {num_padrao} linha(s) utilizaram o ID Estendido padrão '999'.")
-
             resultado = resultado[['Conta Código', 'ID Estendido', 'Descrição', 'Nome da Conta', 'Valor', 'Data']]
+
             resultado.to_excel(caminho_saida_xlsx, index=False)
             logger.info(f"✅ Arquivo Excel salvo em: {caminho_saida_xlsx}")
 
@@ -219,11 +190,12 @@ class AssociadorPorTexto:
                         f.write("|6000|X||||\n")
                         data = row['Data'] or ""
                         conta_codigo = row['Conta Código'] or ""
-                        campo5 = row['ID Estendido'] or "999"
+                        campo5 = row['ID Estendido'] or ""
                         valor = f"{row['Valor']:.2f}".replace('.', ',') if pd.notnull(row['Valor']) else "0,00"
                         descricao = row['Descrição'] or ""
                         linha_6100 = f"|6100|{data}|{conta_codigo}|{campo5}|{valor}||{descricao}||||\n"
                         f.write(linha_6100)
+
                 logger.info(f"✅ Arquivo TXT salvo em: {caminho_saida_txt}")
 
             return resultado.to_dict(orient='records')
