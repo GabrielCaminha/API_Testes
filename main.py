@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 DOCUMENTOS_DIR = "documentos"
+ASSOCIACOES_DIR = "associacoes"
 os.makedirs(DOCUMENTOS_DIR, exist_ok=True)
+os.makedirs(ASSOCIACOES_DIR, exist_ok=True)
 
 BASE_URL = "https://api-testes.onrender.com"
 
@@ -104,7 +106,7 @@ async def processar_documentos(
 
                     associador.processar_extrato(caminho_temp, caminho_saida_xlsx, caminho_saida_txt)
 
-                    download_url_xlsx = f"{BASE_URL}/documentos/{documento_id}"
+                    download_url_xlsx = f"{BASE_URL}/documentos/{documento_id}.xlsx"
                     download_url_txt = f"{BASE_URL}/documentos/{documento_id}.txt"
 
                     caminho_saida_chatgpt = caminho_saida_xlsx.replace(".xlsx", "_chatgpt.xlsx")
@@ -114,7 +116,7 @@ async def processar_documentos(
                         documento_id_chatgpt = f"{documento_id}_chatgpt"
                         novo_caminho_chatgpt = os.path.join(DOCUMENTOS_DIR, f"{documento_id_chatgpt}.xlsx")
                         os.rename(caminho_saida_chatgpt, novo_caminho_chatgpt)
-                        download_url_chatgpt = f"{BASE_URL}/documentos/{documento_id_chatgpt}"
+                        download_url_chatgpt = f"{BASE_URL}/documentos/{documento_id_chatgpt}.xlsx"
 
                     resultado = {
                         "arquivo": arquivo.filename,
@@ -145,7 +147,7 @@ async def processar_documentos(
 
                     resultado_nota = leitorNota.processar_nota_fiscal_com_plano(conteudo, caminho_temp_plano, caminho_saida)
 
-                    download_url = f"{BASE_URL}/documentos/{documento_id}"
+                    download_url = f"{BASE_URL}/documentos/{documento_id}.txt"
                     resultados.append({
                         "arquivo": arquivo.filename,
                         "status": "processado",
@@ -175,8 +177,12 @@ async def processar_documentos(
                                 usuario_id=usuario_id
                             )
 
-                            download_url_xlsx = f"{BASE_URL}/documentos/{documento_id}"
+                            download_url_xlsx = f"{BASE_URL}/documentos/{documento_id}.xlsx"
                             download_url_txt = f"{BASE_URL}/documentos/{documento_id}.txt"
+
+                            # URLs para arquivos extras
+                            download_url_plano_atualizado = f"{BASE_URL}/documentos/{usuario_id}/plano_de_contas_atualizado.txt"
+                            download_url_associacoes_json = f"{BASE_URL}/associacoes/{usuario_id}/associacoes.json"
 
                             caminho_saida_chatgpt = caminho_saida_xlsx.replace(".xlsx", "_chatgpt.xlsx")
                             download_url_chatgpt = None
@@ -185,7 +191,7 @@ async def processar_documentos(
                                 documento_id_chatgpt = f"{documento_id}_chatgpt"
                                 novo_caminho_chatgpt = os.path.join(DOCUMENTOS_DIR, f"{documento_id_chatgpt}.xlsx")
                                 os.rename(caminho_saida_chatgpt, novo_caminho_chatgpt)
-                                download_url_chatgpt = f"{BASE_URL}/documentos/{documento_id_chatgpt}"
+                                download_url_chatgpt = f"{BASE_URL}/documentos/{documento_id_chatgpt}.xlsx"
 
                             resultado = {
                                 "arquivo": arquivo.filename,
@@ -193,6 +199,8 @@ async def processar_documentos(
                                 "tipo": "extrato_pdf",
                                 "download_url_excel": download_url_xlsx,
                                 "download_url_txt": download_url_txt,
+                                "download_url_plano_atualizado": download_url_plano_atualizado,
+                                "download_url_associacoes_json": download_url_associacoes_json,
                                 "documento_id": documento_id
                             }
 
@@ -257,10 +265,10 @@ async def obter_documento(documento_id: str):
 
         if caminho_arquivo.endswith('.xlsx'):
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            filename = "resultado_financeiro.xlsx"
+            filename = arquivos[0]
         elif caminho_arquivo.endswith('.txt'):
             media_type = "text/plain"
-            filename = "conciliado.txt"
+            filename = arquivos[0]
         else:
             media_type = "application/octet-stream"
             filename = arquivos[0]
@@ -274,6 +282,18 @@ async def obter_documento(documento_id: str):
         logger.error(f"Erro ao recuperar documento: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao recuperar documento: {str(e)}")
 
+@app.get("/associacoes/{usuario_id}/{filename}")
+async def obter_associacoes(usuario_id: str, filename: str):
+    caminho_arquivo = os.path.join(ASSOCIACOES_DIR, usuario_id, filename)
+    if not os.path.exists(caminho_arquivo):
+        raise HTTPException(status_code=404, detail="Arquivo de associações não encontrado")
+
+    return FileResponse(
+        caminho_arquivo,
+        media_type="application/json",
+        filename=filename
+    )
+
 @app.get("/")
 async def root_check():
     return {
@@ -282,6 +302,7 @@ async def root_check():
         "endpoints": {
             "POST /processar": "Processa múltiplos arquivos",
             "GET /documentos/{id}": "Recupera um documento processado",
+            "GET /associacoes/{usuario_id}/{filename}": "Recupera arquivo JSON de associações",
             "GET /healthcheck": "Verifica status do serviço"
         },
         "api_url": BASE_URL
