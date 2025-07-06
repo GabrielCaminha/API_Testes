@@ -65,6 +65,17 @@ class AssociadorPorTexto:
         with open(self.associacoes_path, 'w', encoding='utf-8') as f:
             json.dump(associacoes, f, indent=2, ensure_ascii=False)
 
+    def extrair_json(self, texto: str):
+        """
+        Tenta extrair o primeiro objeto JSON válido contido em 'texto',
+        removendo qualquer texto antes ou depois das chaves { ... }.
+        """
+        texto = texto.strip()
+        match = re.search(r'\{.*\}', texto, re.DOTALL)
+        if not match:
+            raise ValueError("Não foi possível extrair JSON válido da resposta")
+        return match.group(0)
+
     def consultar_chatgpt_para_associacao(self, descricoes_sem_associacao, plano_df, associacoes_dict):
         descricoes_sem_associacao = [d.strip() for d in descricoes_sem_associacao if d.strip()]
 
@@ -103,17 +114,19 @@ class AssociadorPorTexto:
         logger.info(f"📥 Resposta bruta: {resposta_raw}")
 
         try:
-            associacoes_resposta = json.loads(resposta_raw)
-        except json.JSONDecodeError:
-            logger.warning("⚠️ Resposta não é JSON válido. Marcando tudo como 'A IDENTIFICAR'.")
-            associacoes_resposta = {desc: "A IDENTIFICAR" for desc in descricoes_sem_associacao}
+            json_limpo = self.extrair_json(resposta_raw)
+            associacoes_resposta = json.loads(json_limpo)
+        except Exception as e:
+            logger.warning(f"⚠️ Resposta não é JSON válido ({e}). Marcando tudo como 'A IDENTIFICAR'.")
+            associacoes_resposta = {}
 
         novas_associacoes = False
-        for desc in descricoes_sem_associacao:
-            conta = associacoes_resposta.get(desc, "A IDENTIFICAR").strip()
+        for idx, desc in enumerate(descricoes_sem_associacao, start=1):
+            chave = f"desc{idx}"
+            conta = associacoes_resposta.get(chave, "A IDENTIFICAR").strip()
             if conta.lower() not in nomes_validos_lower:
                 conta = "A IDENTIFICAR"
-            associacoes_dict[desc.strip()] = conta
+            associacoes_dict[desc] = conta
             novas_associacoes = True
 
         if novas_associacoes:
@@ -182,7 +195,7 @@ class AssociadorPorTexto:
         ]
 
         if pendencias:
-            linhas_finais.append(f"{identificador_base}|{id_estendido_padrao}|GRUPOS A IDENTIFICAR")
+            linhas_finais.append(f"{identificador_base}|{id_estendido_padrao}|CONTAS A IDENTIFICAR")
             for idx, desc in enumerate(pendencias, start=1):
                 novo_codigo = f"{identificador_base}-{idx}"
                 linhas_finais.append(f"{novo_codigo}|{id_estendido_padrao}|{desc}")
