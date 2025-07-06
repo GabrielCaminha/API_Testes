@@ -101,22 +101,25 @@ async def processar_documentos(
                 if categoria == "extrato":
                     logger.info(f"Processando extrato: {arquivo.filename}")
                     documento_id = f"extrato_{uuid.uuid4().hex[:8]}"
-                    caminho_saida_xlsx = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.xlsx")
-                    caminho_saida_txt = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.txt")
+                    nome_xlsx = f"{documento_id}.xlsx"
+                    nome_txt = f"{documento_id}.txt"
+
+                    caminho_saida_xlsx = os.path.join(DOCUMENTOS_DIR, nome_xlsx)
+                    caminho_saida_txt = os.path.join(DOCUMENTOS_DIR, nome_txt)
 
                     associador.processar_extrato(caminho_temp, caminho_saida_xlsx, caminho_saida_txt)
 
-                    download_url_xlsx = f"{BASE_URL}/documentos/{documento_id}.xlsx"
-                    download_url_txt = f"{BASE_URL}/documentos/{documento_id}.txt"
+                    download_url_xlsx = f"{BASE_URL}/documentos/{nome_xlsx}"
+                    download_url_txt = f"{BASE_URL}/documentos/{nome_txt}"
 
                     caminho_saida_chatgpt = caminho_saida_xlsx.replace(".xlsx", "_chatgpt.xlsx")
                     download_url_chatgpt = None
 
                     if os.path.exists(caminho_saida_chatgpt):
-                        documento_id_chatgpt = f"{documento_id}_chatgpt"
-                        novo_caminho_chatgpt = os.path.join(DOCUMENTOS_DIR, f"{documento_id_chatgpt}.xlsx")
+                        nome_chatgpt = nome_xlsx.replace(".xlsx", "_chatgpt.xlsx")
+                        novo_caminho_chatgpt = os.path.join(DOCUMENTOS_DIR, nome_chatgpt)
                         os.rename(caminho_saida_chatgpt, novo_caminho_chatgpt)
-                        download_url_chatgpt = f"{BASE_URL}/documentos/{documento_id_chatgpt}.xlsx"
+                        download_url_chatgpt = f"{BASE_URL}/documentos/{nome_chatgpt}"
 
                     resultado = {
                         "arquivo": arquivo.filename,
@@ -143,11 +146,12 @@ async def processar_documentos(
 
                     logger.info(f"Processando nota fiscal: {arquivo.filename}")
                     documento_id = f"plano_{uuid.uuid4().hex[:8]}"
-                    caminho_saida = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.txt")
+                    nome_txt = f"{documento_id}.txt"
+                    caminho_saida = os.path.join(DOCUMENTOS_DIR, nome_txt)
 
                     resultado_nota = leitorNota.processar_nota_fiscal_com_plano(conteudo, caminho_temp_plano, caminho_saida)
 
-                    download_url = f"{BASE_URL}/documentos/{documento_id}.txt"
+                    download_url = f"{BASE_URL}/documentos/{nome_txt}"
                     resultados.append({
                         "arquivo": arquivo.filename,
                         "status": "processado",
@@ -166,8 +170,11 @@ async def processar_documentos(
                             logger.info(f"Enviando texto extraído para associadorPorTexto.associar com plano de contas")
 
                             documento_id = f"extrato_pdf_{uuid.uuid4().hex[:8]}"
-                            caminho_saida_xlsx = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.xlsx")
-                            caminho_saida_txt = os.path.join(DOCUMENTOS_DIR, f"{documento_id}.txt")
+                            nome_xlsx = f"{documento_id}.xlsx"
+                            nome_txt = f"{documento_id}.txt"
+
+                            caminho_saida_xlsx = os.path.join(DOCUMENTOS_DIR, nome_xlsx)
+                            caminho_saida_txt = os.path.join(DOCUMENTOS_DIR, nome_txt)
 
                             associadorPorTexto.associar(
                                 texto=resultado_extrato,
@@ -177,21 +184,24 @@ async def processar_documentos(
                                 usuario_id=usuario_id
                             )
 
-                            download_url_xlsx = f"{BASE_URL}/documentos/{documento_id}.xlsx"
-                            download_url_txt = f"{BASE_URL}/documentos/{documento_id}.txt"
+                            download_url_xlsx = f"{BASE_URL}/documentos/{nome_xlsx}"
+                            download_url_txt = f"{BASE_URL}/documentos/{nome_txt}"
 
-                            # URLs para arquivos extras
-                            download_url_plano_atualizado = f"{BASE_URL}/documentos/{usuario_id}/plano_de_contas_atualizado.txt"
-                            download_url_associacoes_json = f"{BASE_URL}/associacoes/{usuario_id}/associacoes.json"
+                            # Corrigido: plano atualizado e associações ficam em pastas com usuario_id
+                            nome_plano_atualizado = f"novo_plano_completo_{usuario_id}.txt"
+                            download_url_plano_atualizado = f"{BASE_URL}/documentos/{nome_plano_atualizado}"
+
+                            nome_associacoes_json = "associacoes.json"
+                            download_url_associacoes_json = f"{BASE_URL}/associacoes/{usuario_id}/{nome_associacoes_json}"
 
                             caminho_saida_chatgpt = caminho_saida_xlsx.replace(".xlsx", "_chatgpt.xlsx")
                             download_url_chatgpt = None
 
                             if os.path.exists(caminho_saida_chatgpt):
-                                documento_id_chatgpt = f"{documento_id}_chatgpt"
-                                novo_caminho_chatgpt = os.path.join(DOCUMENTOS_DIR, f"{documento_id_chatgpt}.xlsx")
+                                nome_chatgpt = nome_xlsx.replace(".xlsx", "_chatgpt.xlsx")
+                                novo_caminho_chatgpt = os.path.join(DOCUMENTOS_DIR, nome_chatgpt)
                                 os.rename(caminho_saida_chatgpt, novo_caminho_chatgpt)
-                                download_url_chatgpt = f"{BASE_URL}/documentos/{documento_id_chatgpt}.xlsx"
+                                download_url_chatgpt = f"{BASE_URL}/documentos/{nome_chatgpt}"
 
                             resultado = {
                                 "arquivo": arquivo.filename,
@@ -253,25 +263,19 @@ async def processar_documentos(
         if caminho_temp_plano and os.path.exists(caminho_temp_plano):
             os.remove(caminho_temp_plano)
 
-@app.get("/documentos/{documento_id}")
-async def obter_documento(documento_id: str):
+@app.get("/documentos/{filename}")
+async def obter_documento(filename: str):
     try:
-        arquivos = [f for f in os.listdir(DOCUMENTOS_DIR) if f.startswith(documento_id)]
-
-        if not arquivos:
+        caminho_arquivo = os.path.join(DOCUMENTOS_DIR, filename)
+        if not os.path.exists(caminho_arquivo):
             raise HTTPException(status_code=404, detail="Documento não encontrado")
-
-        caminho_arquivo = os.path.join(DOCUMENTOS_DIR, arquivos[0])
 
         if caminho_arquivo.endswith('.xlsx'):
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            filename = arquivos[0]
         elif caminho_arquivo.endswith('.txt'):
             media_type = "text/plain"
-            filename = arquivos[0]
         else:
             media_type = "application/octet-stream"
-            filename = arquivos[0]
 
         return FileResponse(
             caminho_arquivo,
@@ -301,7 +305,7 @@ async def root_check():
         "message": "Envie uma requisição POST para /processar com arquivos (PDF/OFX) e opcionalmente um plano de contas",
         "endpoints": {
             "POST /processar": "Processa múltiplos arquivos",
-            "GET /documentos/{id}": "Recupera um documento processado",
+            "GET /documentos/{filename}": "Recupera um documento processado",
             "GET /associacoes/{usuario_id}/{filename}": "Recupera arquivo JSON de associações",
             "GET /healthcheck": "Verifica status do serviço"
         },
