@@ -9,7 +9,7 @@ import uuid
 from associador import Associador
 import associadorPorTexto
 import leitorNota
-import interpretarExtrato  
+import interpretarExtrato
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
@@ -173,8 +173,9 @@ async def processar_documentos(
                             nome_xlsx = f"{documento_id}.xlsx"
                             nome_txt = f"{documento_id}.txt"
 
-                            caminho_saida_xlsx = os.path.join(DOCUMENTOS_DIR, nome_xlsx)
-                            caminho_saida_txt = os.path.join(DOCUMENTOS_DIR, nome_txt)
+                            # Armazena na pasta com usuario_id
+                            caminho_saida_xlsx = os.path.join(DOCUMENTOS_DIR, usuario_id, nome_xlsx)
+                            caminho_saida_txt = os.path.join(DOCUMENTOS_DIR, usuario_id, nome_txt)
 
                             associadorPorTexto.associar(
                                 texto=resultado_extrato,
@@ -184,12 +185,11 @@ async def processar_documentos(
                                 usuario_id=usuario_id
                             )
 
-                            download_url_xlsx = f"{BASE_URL}/documentos/{nome_xlsx}"
-                            download_url_txt = f"{BASE_URL}/documentos/{nome_txt}"
+                            download_url_xlsx = f"{BASE_URL}/documentos/{usuario_id}/{nome_xlsx}"
+                            download_url_txt = f"{BASE_URL}/documentos/{usuario_id}/{nome_txt}"
 
-                            # Corrigido: plano atualizado e associações ficam em pastas com usuario_id
                             nome_plano_atualizado = f"novo_plano_completo_{usuario_id}.txt"
-                            download_url_plano_atualizado = f"{BASE_URL}/documentos/{nome_plano_atualizado}"
+                            download_url_plano_atualizado = f"{BASE_URL}/documentos/{usuario_id}/{nome_plano_atualizado}"
 
                             nome_associacoes_json = "associacoes.json"
                             download_url_associacoes_json = f"{BASE_URL}/associacoes/{usuario_id}/{nome_associacoes_json}"
@@ -199,9 +199,9 @@ async def processar_documentos(
 
                             if os.path.exists(caminho_saida_chatgpt):
                                 nome_chatgpt = nome_xlsx.replace(".xlsx", "_chatgpt.xlsx")
-                                novo_caminho_chatgpt = os.path.join(DOCUMENTOS_DIR, nome_chatgpt)
+                                novo_caminho_chatgpt = os.path.join(DOCUMENTOS_DIR, usuario_id, nome_chatgpt)
                                 os.rename(caminho_saida_chatgpt, novo_caminho_chatgpt)
-                                download_url_chatgpt = f"{BASE_URL}/documentos/{nome_chatgpt}"
+                                download_url_chatgpt = f"{BASE_URL}/documentos/{usuario_id}/{nome_chatgpt}"
 
                             resultado = {
                                 "arquivo": arquivo.filename,
@@ -263,35 +263,47 @@ async def processar_documentos(
         if caminho_temp_plano and os.path.exists(caminho_temp_plano):
             os.remove(caminho_temp_plano)
 
+@app.get("/documentos/{usuario_id}/{filename}")
+async def obter_documento_usuario(usuario_id: str, filename: str):
+    caminho_arquivo = os.path.join(DOCUMENTOS_DIR, usuario_id, filename)
+    if not os.path.exists(caminho_arquivo):
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    if caminho_arquivo.endswith('.xlsx'):
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif caminho_arquivo.endswith('.txt'):
+        media_type = "text/plain"
+    else:
+        media_type = "application/octet-stream"
+
+    return FileResponse(
+        caminho_arquivo,
+        media_type=media_type,
+        filename=filename
+    )
+
 @app.get("/documentos/{filename}")
 async def obter_documento(filename: str):
-    try:
-        caminho_arquivo = os.path.join(DOCUMENTOS_DIR, filename)
-        if not os.path.exists(caminho_arquivo):
-            raise HTTPException(status_code=404, detail="Documento não encontrado")
+    caminho_arquivo = os.path.join(DOCUMENTOS_DIR, filename)
+    if not os.path.exists(caminho_arquivo):
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    if caminho_arquivo.endswith('.xlsx'):
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif caminho_arquivo.endswith('.txt'):
+        media_type = "text/plain"
+    else:
+        media_type = "application/octet-stream"
 
-        if caminho_arquivo.endswith('.xlsx'):
-            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        elif caminho_arquivo.endswith('.txt'):
-            media_type = "text/plain"
-        else:
-            media_type = "application/octet-stream"
-
-        return FileResponse(
-            caminho_arquivo,
-            media_type=media_type,
-            filename=filename
-        )
-    except Exception as e:
-        logger.error(f"Erro ao recuperar documento: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao recuperar documento: {str(e)}")
+    return FileResponse(
+        caminho_arquivo,
+        media_type=media_type,
+        filename=filename
+    )
 
 @app.get("/associacoes/{usuario_id}/{filename}")
 async def obter_associacoes(usuario_id: str, filename: str):
     caminho_arquivo = os.path.join(ASSOCIACOES_DIR, usuario_id, filename)
     if not os.path.exists(caminho_arquivo):
         raise HTTPException(status_code=404, detail="Arquivo de associações não encontrado")
-
     return FileResponse(
         caminho_arquivo,
         media_type="application/json",
@@ -305,8 +317,9 @@ async def root_check():
         "message": "Envie uma requisição POST para /processar com arquivos (PDF/OFX) e opcionalmente um plano de contas",
         "endpoints": {
             "POST /processar": "Processa múltiplos arquivos",
-            "GET /documentos/{filename}": "Recupera um documento processado",
-            "GET /associacoes/{usuario_id}/{filename}": "Recupera arquivo JSON de associações",
+            "GET /documentos/{filename}": "Recupera um documento processado (geral)",
+            "GET /documentos/{usuario_id}/{filename}": "Recupera documentos do usuário",
+            "GET /associacoes/{usuario_id}/{filename}": "Recupera JSON de associações",
             "GET /healthcheck": "Verifica status do serviço"
         },
         "api_url": BASE_URL
