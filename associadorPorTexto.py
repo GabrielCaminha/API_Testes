@@ -18,9 +18,23 @@ client = OpenAI(api_key=API_KEY)
 
 
 class AssociadorPorTexto:
-    def __init__(self, caminho_plano: Optional[str] = None, usuario_id: Optional[str] = "default"):
+    def __init__(
+        self,
+        caminho_plano: Optional[str] = None,
+        usuario_id: Optional[str] = "default",
+        associacoes_json: Optional[str] = None  # ✅ Novo argumento
+    ):
         self.caminho_plano = caminho_plano
         self.usuario_id = usuario_id
+        self.associacoes_json_externo = None  # ✅ Interno
+
+        if associacoes_json:
+            try:
+                self.associacoes_json_externo = json.loads(associacoes_json)
+                logger.info(f"✅ Usando associacoes_json fornecido externamente com {len(self.associacoes_json_externo)} itens.")
+            except json.JSONDecodeError as e:
+                logger.warning(f"⚠️ associacoes_json inválido: {e}. Será ignorado.")
+                self.associacoes_json_externo = None
 
         self.pasta_associacoes = os.path.join("associacoes", self.usuario_id)
         os.makedirs(self.pasta_associacoes, exist_ok=True)
@@ -52,6 +66,9 @@ class AssociadorPorTexto:
         })
 
     def carregar_associacoes_json(self):
+        if self.associacoes_json_externo is not None:
+            return self.associacoes_json_externo  # ✅ Prioriza json externo
+
         if not os.path.exists(self.associacoes_path):
             self.salvar_associacoes_json({})
         try:
@@ -62,14 +79,13 @@ class AssociadorPorTexto:
             return {}
 
     def salvar_associacoes_json(self, associacoes):
+        if self.associacoes_json_externo is not None:
+            logger.info("✅ Não sobrescreve associacoes.json pois está usando JSON externo.")
+            return
         with open(self.associacoes_path, 'w', encoding='utf-8') as f:
             json.dump(associacoes, f, indent=2, ensure_ascii=False)
 
     def extrair_json(self, texto: str):
-        """
-        Tenta extrair o primeiro objeto JSON válido contido em 'texto',
-        removendo qualquer texto antes ou depois das chaves { ... }.
-        """
         texto = texto.strip()
         match = re.search(r'\{.*\}', texto, re.DOTALL)
         if not match:
@@ -176,7 +192,6 @@ class AssociadorPorTexto:
 
         self.salvar_associacoes_json(associacoes)
 
-        # 🗂️ Gera novo plano de contas antes de Excel/TXT
         pendencias = [desc for desc in associacoes if associacoes[desc] == "A IDENTIFICAR"]
         logger.info(f"📌 Pendências: {pendencias}")
 
@@ -200,7 +215,6 @@ class AssociadorPorTexto:
                 novo_codigo = f"{identificador_base}-{idx}"
                 linhas_finais.append(f"{novo_codigo}|{id_estendido_padrao}|{desc}")
 
-        # Salva novo plano antes do TXT
         if linhas_finais:
             novo_plano_path = os.path.join(self.pasta_documentos, f"novo_plano_completo_{self.usuario_id}.txt")
             with open(novo_plano_path, 'w', encoding='utf-8') as f:
@@ -208,7 +222,6 @@ class AssociadorPorTexto:
                     f.write(linha + '\n')
             logger.info(f"✅ Novo plano de contas COMPLETO salvo em: {novo_plano_path}")
 
-        # 🗝️ Atribui códigos corretos usando novo plano
         df['Conta Código'] = None
         df['ID Estendido'] = None
 
@@ -226,14 +239,12 @@ class AssociadorPorTexto:
                     df.at[idx, 'Conta Código'] = f"{identificador_base}-{pos}"
                     df.at[idx, 'ID Estendido'] = id_estendido_padrao
 
-        # Salva Excel
         resultado = df[['Conta Código', 'Conta Associada', 'ID Estendido', 'Descrição', 'Valor', 'Data']]
         nome_excel = os.path.basename(caminho_saida_xlsx)
         caminho_excel_final = os.path.join(self.pasta_documentos, nome_excel)
         resultado.to_excel(caminho_excel_final, index=False)
         logger.info(f"✅ Excel salvo em: {caminho_excel_final}")
 
-        # Gera TXT depois
         if caminho_saida_txt:
             nome_txt = os.path.basename(caminho_saida_txt)
             caminho_txt_final = os.path.join(self.pasta_documentos, nome_txt)
@@ -253,9 +264,17 @@ class AssociadorPorTexto:
         return resultado.to_dict(orient='records')
 
 
-def associar(texto: str, caminho_saida_xlsx: str = "saida_associada.xlsx",
-             caminho_saida_txt: Optional[str] = None,
-             caminho_plano: Optional[str] = None,
-             usuario_id: Optional[str] = "default"):
-    associador = AssociadorPorTexto(caminho_plano=caminho_plano, usuario_id=usuario_id)
+def associar(
+    texto: str,
+    caminho_saida_xlsx: str = "saida_associada.xlsx",
+    caminho_saida_txt: Optional[str] = None,
+    caminho_plano: Optional[str] = None,
+    usuario_id: Optional[str] = "default",
+    associacoes_json: Optional[str] = None  # ✅ Novo parâmetro
+):
+    associador = AssociadorPorTexto(
+        caminho_plano=caminho_plano,
+        usuario_id=usuario_id,
+        associacoes_json=associacoes_json
+    )
     return associador.processar_texto(texto, caminho_saida_xlsx, caminho_saida_txt)

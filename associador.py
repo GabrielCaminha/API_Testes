@@ -1,248 +1,249 @@
-import pandas as pd
-import json
 import os
+import json
 import logging
+import pandas as pd
+import re
 from openai import OpenAI
-from difflib import get_close_matches
-from ofxparse import OfxParser
 from dotenv import load_dotenv
-from typing import Union, BinaryIO
+from typing import Optional, Union, BinaryIO
+from ofxparse import OfxParser
 
-# Configuração de logging
+# Configura logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY2")
-
 client = OpenAI(api_key=API_KEY)
 
 class Associador:
-    def __init__(self, caminho_plano=None, usuario_id: str = "default"):
-        self.caminho_plano = caminho_plano or "plano_de_contas.txt"
+    def __init__(self, caminho_plano: Optional[str] = None, usuario_id: str = "default"):
+        self.caminho_plano = caminho_plano
         self.usuario_id = usuario_id
+
         self.pasta_associacoes = os.path.join("associacoes", self.usuario_id)
         os.makedirs(self.pasta_associacoes, exist_ok=True)
         self.associacoes_path = os.path.join(self.pasta_associacoes, "associacoes.json")
 
+        self.pasta_documentos = os.path.join("documentos", self.usuario_id)
+        os.makedirs(self.pasta_documentos, exist_ok=True)
+
     def ler_plano_de_contas(self):
-        codigos = []
-        nomes = []
+        codigos, ids_estendidos, nomes = [], [], []
         try:
-            # Tenta primeiro com UTF-8
             with open(self.caminho_plano, 'r', encoding='utf-8') as f:
-                for linha in f:
-                    partes = linha.strip().split('|')
-                    if len(partes) >= 3:
-                        codigos.append(partes[0].strip())
-                        nomes.append(partes[2].strip())
-            return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
+                linhas = f.readlines()
         except UnicodeDecodeError:
-            # Fallback para latin-1 se UTF-8 falhar
-            try:
-                with open(self.caminho_plano, 'r', encoding='latin-1') as f:
-                    for linha in f:
-                        partes = linha.strip().split('|')
-                        if len(partes) >= 3:
-                            codigos.append(partes[0].strip())
-                            nomes.append(partes[2].strip())
-                return pd.DataFrame({'Conta Código': codigos, 'Nome da Conta': nomes})
-            except Exception as e:
-                logger.error(f"Erro ao ler plano de contas (latin-1): {str(e)}")
-                raise
-        except Exception as e:
-            logger.error(f"Erro ao ler plano de contas: {str(e)}")
-            raise
+            with open(self.caminho_plano, 'r', encoding='latin-1') as f:
+                linhas = f.readlines()
 
-    def ler_ofx(self, file_input: Union[str, BinaryIO]):
-        """Aceita tanto caminho do arquivo quanto objeto de arquivo binário"""
-        try:
-            if isinstance(file_input, str):
-                with open(file_input, 'rb') as f:
-                    ofx = OfxParser.parse(f)
-            else:
-                if hasattr(file_input, 'seek'):
-                    file_input.seek(0)
-                ofx = OfxParser.parse(file_input)
+        for linha in linhas:
+            partes = linha.strip().split('|')
+            if len(partes) >= 3:
+                codigos.append(partes[0].strip())
+                ids_estendidos.append(partes[1].strip())
+                nomes.append(partes[2].strip())
 
-            transacoes = []
-            for account in ofx.accounts:
-                for t in account.statement.transactions:
-                    transacoes.append({
-                        "Data": t.date.strftime("%d/%m/%Y"),
-                        "Descrição": t.memo or t.payee or "",
-                        "Valor": t.amount,
-                        "Crédito/Débito": t.type.upper(),
-                        "Saldo": None
-                    })
-            return pd.DataFrame(transacoes)
-
-        except Exception as e:
-            logger.error(f"Erro ao ler OFX: {str(e)}")
-            raise ValueError(f"Formato OFX inválido: {str(e)}")
+        return pd.DataFrame({
+            'Conta Código': codigos,
+            'ID Estendido': ids_estendidos,
+            'Nome da Conta': nomes
+        })
 
     def carregar_associacoes_json(self):
+        if not os.path.exists(self.associacoes_path):
+            self.salvar_associacoes_json({})
         try:
-            if os.path.exists(self.associacoes_path):
-                with open(self.associacoes_path, 'r', encoding='utf-8') as f:
-                    associacoes = json.load(f)
-                    return {k.strip(): v.strip() for k, v in associacoes.items()}
-            return {}
-        except Exception as e:
-            logger.error(f"Erro ao carregar associações: {str(e)}")
+            with open(self.associacoes_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except json.decoder.JSONDecodeError:
+            self.salvar_associacoes_json({})
             return {}
 
     def salvar_associacoes_json(self, associacoes):
+        with open(self.associacoes_path, 'w', encoding='utf-8') as f:
+            json.dump(associacoes, f, indent=2, ensure_ascii=False)
+
+    def extrair_json(self, texto: str):
+        texto = texto.strip()
+        match = re.search(r'\{.*\}', texto, re.DOTALL)
+        if not match:
+            raise ValueError("Não foi possível extrair JSON válido da resposta")
+        return match.group(0)
+
+    def consultar_chatgpt_para_associacao(self, descricoes_sem_associacao, plano_df, associacoes_dict):
+        descricoes_sem_associacao = [d.strip() for d in descricoes_sem_associacao if d.strip()]
+
+        nomes_validos = sorted(set(plano_df['Nome da Conta'].tolist()))
+        nomes_validos.append("A IDENTIFICAR")
+        nomes_validos_lower = [n.lower() for n in nomes_validos]
+
+        payload = {
+            "descricoes": descricoes_sem_associacao,
+            "opcoes": nomes_validos
+        }
+
+        logger.info(f"📤 Payload JSON: {json.dumps(payload, ensure_ascii=False)}")
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Você é um assistente contábil.\n"
+                        "Associe cada descrição da lista `descricoes` a UM item de `opcoes`.\n"
+                        "⚠️ Se não houver correspondência lógica, retorne 'A IDENTIFICAR'.\n"
+                        "✅ Retorne EXATAMENTE neste formato JSON: { \"desc1\": \"ContaX\", \"desc2\": \"ContaY\" }."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(payload, ensure_ascii=False)
+                }
+            ],
+            temperature=0.0
+        )
+
+        resposta_raw = response.choices[0].message.content
+        logger.info(f"📥 Resposta bruta: {resposta_raw}")
+
         try:
-            with open(self.associacoes_path, 'w', encoding='utf-8') as f:
-                json.dump(associacoes, f, indent=2, ensure_ascii=False)
+            json_limpo = self.extrair_json(resposta_raw)
+            associacoes_resposta = json.loads(json_limpo)
         except Exception as e:
-            logger.error(f"Erro ao salvar associações: {str(e)}")
-            raise
+            logger.warning(f"⚠️ Resposta não é JSON válido ({e}). Marcando tudo como 'A IDENTIFICAR'.")
+            associacoes_resposta = {}
 
-    def associar_conta_similaridade(self, descricao, plano_df, associacoes_dict, cutoff=0.35):
+        novas_associacoes = False
+        for idx, desc in enumerate(descricoes_sem_associacao, start=1):
+            chave = f"desc{idx}"
+            conta = associacoes_resposta.get(chave, "A IDENTIFICAR").strip()
+            if conta.lower() not in nomes_validos_lower:
+                conta = "A IDENTIFICAR"
+            associacoes_dict[desc] = conta
+            novas_associacoes = True
+
+        if novas_associacoes:
+            self.salvar_associacoes_json(associacoes_dict)
+
+        return associacoes_dict
+
+    def ler_ofx(self, file_input: Union[str, BinaryIO]):
+        if isinstance(file_input, str):
+            with open(file_input, 'rb') as f:
+                ofx = OfxParser.parse(f)
+        else:
+            if hasattr(file_input, 'seek'):
+                file_input.seek(0)
+            ofx = OfxParser.parse(file_input)
+
+        transacoes = []
+        for account in ofx.accounts:
+            for t in account.statement.transactions:
+                transacoes.append({
+                    "Data": t.date.strftime("%d/%m/%Y"),
+                    "Descrição": (t.memo or t.payee or "").strip(),
+                    "Valor": t.amount
+                })
+        return pd.DataFrame(transacoes)
+
+    def processar_ofx(self, file_input: Union[str, BinaryIO], caminho_saida_xlsx: str, caminho_saida_txt: Optional[str] = None):
+        df = self.ler_ofx(file_input)
+
+        plano_df = self.ler_plano_de_contas()
+        plano_df['Nome da Conta'] = plano_df['Nome da Conta'].str.strip()
+
+        associacoes = self.carregar_associacoes_json()
+        df['Conta Associada'] = df['Descrição'].map(lambda desc: associacoes.get(desc.strip()))
+
+        nao_associados = df[df['Conta Associada'].isna()]['Descrição'].unique().tolist()
+        logger.info(f"📌 Não associados: {nao_associados}")
+
+        if nao_associados:
+            associacoes = self.consultar_chatgpt_para_associacao(nao_associados, plano_df, associacoes)
+            for desc in nao_associados:
+                conta = associacoes.get(desc)
+                if conta:
+                    df.loc[df['Descrição'] == desc, 'Conta Associada'] = conta
+
+        self.salvar_associacoes_json(associacoes)
+
+        pendencias = [desc for desc in associacoes if associacoes[desc] == "A IDENTIFICAR"]
+        logger.info(f"📌 Pendências: {pendencias}")
+
         try:
-            descricao = descricao.strip()
-            if descricao in associacoes_dict:
-                return associacoes_dict[descricao].strip()
+            plano_df['Conta Código Int'] = plano_df['Conta Código'].astype(str).str.extract(r'(\d+)').astype(int)
+            ultimo_codigo = int(plano_df['Conta Código Int'].max())
+        except:
+            ultimo_codigo = 0
 
-            nomes = plano_df['Nome da Conta'].tolist()
-            match = get_close_matches(descricao, nomes, n=1, cutoff=cutoff)
-            if match:
-                conta = match[0].strip()
-                associacoes_dict[descricao] = conta
-                return conta
-            return None
-        except Exception as e:
-            logger.error(f"Erro na associação por similaridade: {str(e)}")
-            return None
+        identificador_base = ultimo_codigo + 1
+        id_estendido_padrao = "00000000"
 
-    def consultar_chatgpt_para_associacao(self, descricoes_sem_associacao, plano_df):
-        try:
-            nomes_validos = sorted(set(plano_df['Nome da Conta'].tolist()))
+        linhas_finais = [
+            f"{row['Conta Código']}|{row['ID Estendido']}|{row['Nome da Conta']}"
+            for _, row in plano_df.iterrows()
+        ]
 
-            prompt = (
-                "Você é um assistente contábil. Sua tarefa é associar descrições de transações bancárias a nomes do plano de contas a seguir.\n"
-                "⚠️ Regras importantes:\n"
-                "- Use **exatamente um dos nomes do plano de contas** como resposta.\n"
-                "- Nunca repita a descrição como nome de conta.\n"
-                "- Responda no formato: [descrição] -> [nome da conta do plano]\n\n"
-                "Nomes disponíveis no plano de contas:\n"
-            )
+        if pendencias:
+            linhas_finais.append(f"{identificador_base}|{id_estendido_padrao}|CONTAS A IDENTIFICAR")
+            for idx, desc in enumerate(pendencias, start=1):
+                novo_codigo = f"{identificador_base}-{idx}"
+                linhas_finais.append(f"{novo_codigo}|{id_estendido_padrao}|{desc}")
 
-            for nome in nomes_validos:
-                prompt += f"{nome}\n"
+        if linhas_finais:
+            novo_plano_path = os.path.join(self.pasta_documentos, f"novo_plano_completo_{self.usuario_id}.txt")
+            with open(novo_plano_path, 'w', encoding='utf-8') as f:
+                for linha in linhas_finais:
+                    f.write(linha + '\n')
+            logger.info(f"✅ Novo plano de contas COMPLETO salvo em: {novo_plano_path}")
 
-            prompt += "\nDescrições para associar:\n"
-            for desc in descricoes_sem_associacao:
-                prompt += f"{desc}\n"
+        df['Conta Código'] = None
+        df['ID Estendido'] = None
 
-            response = client.chat.completions.create(
-                model="gpt-4",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                max_tokens=800
-            )
-            resposta = response.choices[0].message.content
+        for idx, row in df.iterrows():
+            conta = row['Conta Associada']
+            if conta and conta != "A IDENTIFICAR":
+                match = plano_df[plano_df['Nome da Conta'] == conta]
+                if len(match) == 1:
+                    df.at[idx, 'Conta Código'] = match.iloc[0]['Conta Código']
+                    df.at[idx, 'ID Estendido'] = match.iloc[0]['ID Estendido']
+            elif conta == "A IDENTIFICAR":
+                desc = row['Descrição'].strip()
+                if desc in pendencias:
+                    pos = pendencias.index(desc) + 1
+                    df.at[idx, 'Conta Código'] = f"{identificador_base}-{pos}"
+                    df.at[idx, 'ID Estendido'] = id_estendido_padrao
 
-            sugestoes = {}
-            for linha in resposta.splitlines():
-                if "->" in linha:
-                    partes = linha.split("->", 1)
-                    descricao = partes[0].strip()
-                    conta = partes[1].strip()
-                    if conta in nomes_validos and descricao in descricoes_sem_associacao:
-                        sugestoes[descricao] = conta
-                    else:
-                        logger.warning(f"Ignorado: '{descricao} -> {conta}' (conta inválida ou repetida)")
-            return sugestoes
+        resultado = df[['Conta Código', 'Conta Associada', 'ID Estendido', 'Descrição', 'Valor', 'Data']]
+        nome_excel = os.path.basename(caminho_saida_xlsx)
+        caminho_excel_final = os.path.join(self.pasta_documentos, nome_excel)
+        resultado.to_excel(caminho_excel_final, index=False)
+        logger.info(f"✅ Excel salvo em: {caminho_excel_final}")
 
-        except Exception as e:
-            logger.error(f"Erro ao consultar ChatGPT: {str(e)}")
-            return {}
+        if caminho_saida_txt:
+            nome_txt = os.path.basename(caminho_saida_txt)
+            caminho_txt_final = os.path.join(self.pasta_documentos, nome_txt)
+            with open(caminho_txt_final, 'w', encoding='utf-8') as f:
+                f.write("|0000|32662718000130|\n")
+                for _, row in resultado.iterrows():
+                    f.write("|6000|X||||\n")
+                    data = row['Data'] or ""
+                    conta_codigo = row['Conta Código'] or ""
+                    campo5 = row['ID Estendido'] or ""
+                    valor = f"{row['Valor']:.2f}".replace('.', ',') if pd.notnull(row['Valor']) else "0,00"
+                    descricao = row['Descrição'] or ""
+                    linha_6100 = f"|6100|{data}|{conta_codigo}|{campo5}|{valor}||{descricao}||||\n"
+                    f.write(linha_6100)
+            logger.info(f"✅ TXT salvo em: {caminho_txt_final}")
 
-    def processar_extrato(self, file_input: Union[str, BinaryIO], caminho_saida_xlsx: str, caminho_saida_txt: str = None):
-        """
-        Processa o extrato OFX, associa contas, salva planilha Excel e opcionalmente gera arquivo TXT.
-        """
-        try:
-            extrato_df = self.ler_ofx(file_input)
-            plano_df = self.ler_plano_de_contas()
+        return resultado.to_dict(orient='records')
 
-            plano_df['Nome da Conta'] = plano_df['Nome da Conta'].apply(
-                lambda x: x.strip() if isinstance(x, str) else x
-            )
 
-            associacoes = self.carregar_associacoes_json()
-
-            # Associa contas por similaridade ou usando associações salvas
-            extrato_df['Conta Associada'] = extrato_df['Descrição'].apply(
-                lambda desc: self.associar_conta_similaridade(desc, plano_df, associacoes)
-            )
-
-            nao_associados = extrato_df[extrato_df['Conta Associada'].isna()]['Descrição'].unique().tolist()
-
-            if nao_associados:
-                novas_associacoes = self.consultar_chatgpt_para_associacao(nao_associados, plano_df)
-                for desc, conta in novas_associacoes.items():
-                    conta_limpa = conta.strip()
-                    associacoes[desc.strip()] = conta_limpa
-                    extrato_df.loc[extrato_df['Descrição'] == desc, 'Conta Associada'] = conta_limpa
-
-                df_chatgpt = extrato_df[extrato_df['Descrição'].isin(novas_associacoes.keys())].copy()
-                df_chatgpt = df_chatgpt.merge(
-                    plano_df, left_on='Conta Associada', right_on='Nome da Conta', how='left'
-                )
-                df_chatgpt = df_chatgpt[['Conta Código', 'Descrição', 'Nome da Conta', 'Valor', 'Crédito/Débito', 'Data']]
-                caminho_chatgpt = caminho_saida_xlsx.replace('.xlsx', '_chatgpt.xlsx')
-                df_chatgpt.to_excel(caminho_chatgpt, index=False)
-                logger.info(f"✅ Planilha com respostas do ChatGPT salva em: {caminho_chatgpt}")
-
-            extrato_df['Conta Associada'] = extrato_df['Conta Associada'].apply(
-                lambda x: x.strip() if isinstance(x, str) else x
-            )
-
-            self.salvar_associacoes_json(associacoes)
-
-            resultado = extrato_df.merge(
-                plano_df, left_on='Conta Associada', right_on='Nome da Conta', how='left'
-            )
-
-            resultado = resultado[['Conta Código', 'Descrição', 'Nome da Conta', 'Valor', 'Crédito/Débito', 'Data']]
-
-            # Salva Excel
-            resultado.to_excel(caminho_saida_xlsx, index=False)
-            logger.info(f"✅ Arquivo Excel salvo em: {caminho_saida_xlsx}")
-
-            # Se caminho_saida_txt foi informado, gera arquivo TXT com formato customizado
-            if caminho_saida_txt:
-                with open(caminho_saida_txt, 'w', encoding='utf-8') as f:
-                    # Exemplo de cabeçalho fixo, você pode adaptar conforme necessário
-                    f.write("|0000|32662718000130|\n")  # Pode parametrizar se quiser
-                    for _, row in resultado.iterrows():
-                        f.write("|6000|X||||\n")
-
-                        # Campos para linha 6100:
-                        data = row['Data']
-                        conta_codigo = row['Conta Código'] or ""
-                        # Vou usar placeholders 8 e 11 para os campos fixos conforme seu exemplo:
-                        campo4 = "8"
-                        campo5 = "11"
-                        valor = f"{row['Valor']:.2f}".replace('.', ',')  # valor com vírgula decimal
-                        descricao = row['Descrição'] or ""
-
-                        linha_6100 = f"|6100|{data}|{conta_codigo}|{campo4}|{valor}| |{descricao}|||||\n"
-                        f.write(linha_6100)
-
-                logger.info(f"✅ Arquivo TXT salvo em: {caminho_saida_txt}")
-
-            return caminho_saida_xlsx
-
-        except Exception as e:
-            logger.error(f"❌ Erro no processamento do extrato: {str(e)}")
-            raise
-
-# Função compatível para uso direto
-def processar_extrato(caminho_ofx, caminho_saida_xlsx):
-    associador = Associador()
-    return associador.processar_extrato(caminho_ofx, caminho_saida_xlsx)
+def associar_ofx(file_input: Union[str, BinaryIO], caminho_saida_xlsx: str = "saida_associada.xlsx",
+                 caminho_saida_txt: Optional[str] = None,
+                 caminho_plano: Optional[str] = None,
+                 usuario_id: Optional[str] = "default"):
+    associador = Associador(caminho_plano=caminho_plano, usuario_id=usuario_id)
+    return associador.processar_ofx(file_input, caminho_saida_xlsx, caminho_saida_txt)

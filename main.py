@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 import os
 import fitz
@@ -78,7 +78,8 @@ def categorizar_arquivo(caminho_arquivo: str):
 async def processar_documentos(
     arquivos: List[UploadFile] = File(...),
     arquivo_plano: Optional[UploadFile] = File(None),
-    usuario_id: str = "default"
+    usuario_id: str = Form("default"),
+    associacoes_json: Optional[str] = Form(None)  # ✅ Novo parâmetro opcional
 ):
     resultados = []
     caminho_temp_plano = None
@@ -173,7 +174,6 @@ async def processar_documentos(
                             nome_xlsx = f"{documento_id}.xlsx"
                             nome_txt = f"{documento_id}.txt"
 
-                            # Armazena na pasta com usuario_id
                             caminho_saida_xlsx = os.path.join(DOCUMENTOS_DIR, usuario_id, nome_xlsx)
                             caminho_saida_txt = os.path.join(DOCUMENTOS_DIR, usuario_id, nome_txt)
 
@@ -182,7 +182,8 @@ async def processar_documentos(
                                 caminho_saida_xlsx=caminho_saida_xlsx,
                                 caminho_saida_txt=caminho_saida_txt,
                                 caminho_plano=caminho_temp_plano,
-                                usuario_id=usuario_id
+                                usuario_id=usuario_id,
+                                associacoes_json=associacoes_json  # ✅ Novo argumento passado
                             )
 
                             download_url_xlsx = f"{BASE_URL}/documentos/{usuario_id}/{nome_xlsx}"
